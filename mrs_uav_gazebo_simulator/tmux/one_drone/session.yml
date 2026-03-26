@@ -31,7 +31,7 @@ windows:
       layout: tiled
       panes:
         # world_file:=/home/lmnr31/ros2_ws/src/arena_2025_desenho/my_arena.world
-        - ros2 launch mrs_uav_gazebo_simulator simulation.launch.py world_file:=/home/lmnr31/ros2_ws/src/arena_2025_desenho/my_arena.world gz_headless:=false gz_verbose:=true
+        - ros2 launch mrs_uav_gazebo_simulator simulation.launch.py  gz_headless:=false gz_verbose:=true
         - |
           waitForGazebo; sleep 5
           ros2 service call /mrs_drone_spawner/spawn mrs_msgs/srv/String \
@@ -66,7 +66,7 @@ windows:
           waitForGazebo; sleep 5
           waitForPX4; sleep 2
           source ~/ros2_ws/install/setup.bash
-          ros2 run my_drone_controller drone_node 2>&1 | tee -a /tmp/drone_logs/drone_controller_$(date +%Y%m%d_%H%M%S).log
+          ros2 run my_drone_controller drone_node --ros-args -p follow_heading:=true 2>&1 | tee -a /tmp/drone_logs/drone_controller_$(date +%Y%m%d_%H%M%S).log
 
   # ── 7. Hover supervisor (persistent setpoint streamer) ─────────────────────
   # - hover_supervisor:

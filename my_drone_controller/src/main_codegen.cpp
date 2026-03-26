@@ -1750,6 +1750,7 @@ private:
       }
 
       // PUBLICAR waypoint ATUAL
+      // ... dentro do else if (state_voo_ == 3) do control_loop:
       const auto & current_waypoint = trajectory_waypoints_[current_waypoint_idx_];
 
       if (trajectory_4d_mode_ &&
@@ -1760,12 +1761,17 @@ private:
           current_waypoint.position.z,
           trajectory_yaws_[current_waypoint_idx_]);
       } else {
-        publishPositionTarget(
+        // Cálculo do yaw look-ahead
+        double dx = current_waypoint.position.x - current_x_ned_;
+        double dy = current_waypoint.position.y - current_y_ned_;
+        double yaw_follow = std::atan2(dy, dx);
+
+        publishPositionTargetWithYaw(
           current_waypoint.position.x,
           current_waypoint.position.y,
           current_waypoint.position.z,
-          0.0, MASK_POS_ONLY);
-      }
+          yaw_follow);
+        }
 
       // LOG: Mostrar progresso da trajetória
       if (cycle_count_ % 500 == 0) {

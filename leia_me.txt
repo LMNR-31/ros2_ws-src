@@ -1,0 +1,88 @@
+gz model -m uav1
+
+
+ colcon build --symlink-install --allow-overriding mrs_uav_gazebo_simulator mrs_uav_syste 
+ 
+ 
+ source install/setup.bash
+
+source ~/ros2_ws/install/setup.bash
+
+ros2 service call /mrs_drone_spawner/spawn mrs_msgs/srv/String "value: --x500 --help"
+
+
+
+rm -rf ~/ros2_ws/build
+rm -rf ~/ros2_ws/install
+rm -rf ~/ros2_ws/log
+
+ros2 run drone_custom_control drone_go_forward
+
+ros2 run drone_control drone_soft_land
+
+# para pousar 
+ros2 run drone_control drone_publish_landing_waypoints
+
+ros2 launch drone_control mission_three_nodes.launch.py
+
+# para takeoff
+ros2 run drone_control drone_activate_and_go_forward
+
+#missão pouso e takeoff
+ros2 run drone_control mission_manager
+
+# camera 
+ros2 run drone_control camera_viewer
+
+ros2 topic pub --once /drone_command std_msgs/msg/Float64 "{data: 1.0}"
+
+
+ros2 topic pub /waypoint_goal geometry_msgs/msg/PoseStamped '{
+  header: {frame_id: "map"},
+  pose: {
+    position: {x: 5.0, y: 3.0, z: 2.5},
+    
+  }
+}'
+
+ros2 run drone_control drone_activate_and_go_forward
+# pouso sem desarmar 
+ros2 run drone_control landing_mode_a_land_and_takeoff --ros-args -p z_land:=0.05 -p z_takeoff:=1.5 -p wait_seconds:=5.0 -p use_current_xy:=true
+
+#pouso com desamer
+ros2 run drone_control landing_mode_b_land_and_disarm --ros-args -p x:=1.0 -p y:=0.0 -p z_land:=0.05
+
+
+# dar um 360
+ros2 run drone_control drone_yaw_360 --ros-args -p yaw_target_delta:=6.2831853
+
+# dar um 90 
+ros2 run drone_control drone_yaw_360 --ros-args -p yaw_target_delta:=1.570796
+
+# dar um 180
+ros2 run drone_control drone_yaw_360 --ros-args -p yaw_target_delta:=-3.141592
+
+
+
+
+
+ros2 topic pub --once /waypoints geometry_msgs/msg/PoseArray "header:
+  frame_id: map
+poses:
+- position: {x: 0.0, y: 0.0, z: 1.5}
+  orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}
+- position: {x: 2.0, y: 0.0, z: 1.5}
+  orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}
+- position: {x: 2.0, y: 2.0, z: 1.5}
+  orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}
+- position: {x: 0.0, y: 2.0, z: 1.5}
+  orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}
+- position: {x: 0.0, y: 0.0, z: 1.5}
+  orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}"
+
+
+ros2 run drone_custom_control mavros_takeoff_node --ros-args \
+  -p uav_name:=uav1 \
+  -p takeoff_altitude:=2.0 \
+  -p altitude_threshold:=1.8 \
+  -p publish_waypoint_goal_on_success:=true
