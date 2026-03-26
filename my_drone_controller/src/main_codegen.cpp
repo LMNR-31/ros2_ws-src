@@ -322,6 +322,7 @@ bool validate_pose(const geometry_msgs::msg::Pose & pose,
  * alongside this controller, otherwise it will disarm the drone and prevent
  * State 5 from functioning correctly.
  */
+
 class DroneControllerCompleto : public rclcpp::Node {
 public:
 
@@ -1752,25 +1753,34 @@ private:
       // PUBLICAR waypoint ATUAL
       // ... dentro do else if (state_voo_ == 3) do control_loop:
       const auto & current_waypoint = trajectory_waypoints_[current_waypoint_idx_];
+      size_t last_idx = trajectory_waypoints_.size() - 1;
+      bool at_last_wp = (static_cast<size_t>(current_waypoint_idx_) == last_idx);
 
-      if (trajectory_4d_mode_ &&
-          static_cast<size_t>(current_waypoint_idx_) < trajectory_yaws_.size()) {
-        publishPositionTargetWithYaw(
-          current_waypoint.position.x,
-          current_waypoint.position.y,
-          current_waypoint.position.z,
-          trajectory_yaws_[current_waypoint_idx_]);
+      if (trajectory_4d_mode_ && at_last_wp && static_cast<size_t>(current_waypoint_idx_) < trajectory_yaws_.size()) {
+          // 4D: já pega yaw do waypoint explicitamente
+          publishPositionTargetWithYaw(current_waypoint.position.x, current_waypoint.position.y, current_waypoint.position.z, trajectory_yaws_[current_waypoint_idx_]);
       } else {
-        // Cálculo do yaw look-ahead
-        double dx = current_waypoint.position.x - current_x_ned_;
-        double dy = current_waypoint.position.y - current_y_ned_;
-        double yaw_follow = std::atan2(dy, dx);
-
-        publishPositionTargetWithYaw(
-          current_waypoint.position.x,
-          current_waypoint.position.y,
-          current_waypoint.position.z,
-          yaw_follow);
+        double yaw_follow = 0.0;
+        if (at_last_wp) {
+            if (!at_last_waypoint_yaw_fixed_) {
+                // Calcula uma última vez ao chegar
+                double dx = current_waypoint.position.x - current_x_ned_;
+                double dy = current_waypoint.position.y - current_y_ned_;
+                yaw_follow = std::atan2(dy, dx);
+                final_waypoint_yaw_ = yaw_follow;
+                at_last_waypoint_yaw_fixed_ = true;
+            } else {
+                // Mantém o último valor calculado
+                yaw_follow = final_waypoint_yaw_;
+            }
+          } else {
+              double dx = current_waypoint.position.x - current_x_ned_;
+              double dy = current_waypoint.position.y - current_y_ned_;
+              yaw_follow = std::atan2(dy, dx);
+              final_waypoint_yaw_ = yaw_follow; // Atualiza sempre enquanto "a caminho"
+              at_last_waypoint_yaw_fixed_ = false;
+            }
+            publishPositionTargetWithYaw(current_waypoint.position.x, current_waypoint.position.y, current_waypoint.position.z, yaw_follow);
         }
 
       // LOG: Mostrar progresso da trajetória
@@ -2025,7 +2035,8 @@ private:
   double current_x_ned_;
   double current_y_ned_;
   double current_z_ned_;
-
+  double final_waypoint_yaw_ = 0.0;
+  bool at_last_waypoint_yaw_fixed_ = false;
   // ── Yaw override via tópico /uav1/yaw_override/cmd ────────────────────
   bool yaw_override_enabled_;            ///< true quando override de yaw ativo
   double yaw_rate_cmd_;                  ///< yaw_rate a injetar (rad/s)
