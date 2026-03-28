@@ -198,13 +198,12 @@ void DroneControllerCompleto::init_variables()
 // LANDING / ACTIVATION HELPERS
 // ============================================================
 
-void DroneControllerCompleto::trigger_landing(double x, double y, double z)
+void DroneControllerCompleto::trigger_landing(double z)
 {
   pouso_em_andamento_ = true;
   controlador_ativo_ = false;
   state_voo_ = 4;
   land_cmd_id_ = cmd_queue_.enqueue(CommandType::LAND, {{"z", std::to_string(z)}});
-  (void)x; (void)y;
 }
 
 void DroneControllerCompleto::activate_offboard_arm_if_needed()
@@ -442,10 +441,10 @@ void DroneControllerCompleto::yaw_override_callback(
 // WAYPOINT CALLBACK HELPERS (3D)
 // ============================================================
 
-void DroneControllerCompleto::handle_landing_waypoint_command(double x, double y, double z)
+void DroneControllerCompleto::handle_landing_waypoint_command(double z)
 {
   RCLCPP_WARN(this->get_logger(), "\n🛬🛬🛬 POUSO DETECTADO! Z_final = %.2f m", z);
-  trigger_landing(x, y, z);
+  trigger_landing(z);
   RCLCPP_WARN(this->get_logger(), "📋 [ID=%lu] Comando LAND enfileirado", *land_cmd_id_);
   RCLCPP_WARN(this->get_logger(),
     "🛬 CONTROLADOR DESLIGADO - DEIXANDO drone_soft_land POUSAR\n");
@@ -555,8 +554,7 @@ void DroneControllerCompleto::waypoints_callback(
   double last_z = msg->poses.back().position.z;
 
   if (msg->poses.size() == 1 && last_z < config_.land_z_threshold) {
-    handle_landing_waypoint_command(
-      msg->poses[0].position.x, msg->poses[0].position.y, last_z);
+    handle_landing_waypoint_command(last_z);
     return;
   }
 
@@ -599,10 +597,10 @@ void DroneControllerCompleto::waypoints_callback(
 // SHARED WAYPOINT-GOAL HELPERS
 // ============================================================
 
-bool DroneControllerCompleto::check_landing_in_flight(double x, double y, double z)
+bool DroneControllerCompleto::check_landing_in_flight(double z)
 {
   if ((state_voo_ == 2 || state_voo_ == 3) && z < config_.land_z_threshold) {
-    trigger_landing(x, y, z);
+    trigger_landing(z);
     RCLCPP_WARN(this->get_logger(),
       "🛬 [ID=%lu] POUSO DETECTADO! Z = %.2f m - Comando LAND enfileirado",
       *land_cmd_id_, z);
@@ -647,7 +645,7 @@ void DroneControllerCompleto::waypoint_goal_callback(
   double z = msg->pose.position.z;
   last_z_ = z;
 
-  if (check_landing_in_flight(x, y, z)) { return; }
+  if (check_landing_in_flight(z)) { return; }
   if (handle_state4_disarm_reset()) { return; }
 
   if (state_voo_ == 3) {
@@ -704,7 +702,7 @@ void DroneControllerCompleto::waypoint_goal_4d_callback(
   double z = pose_stamped->pose.position.z;
   last_z_ = z;
 
-  if (check_landing_in_flight(x, y, z)) {
+  if (check_landing_in_flight(z)) {
     RCLCPP_WARN(this->get_logger(),
       "🛬 [ID=%lu] 4D POUSO DETECTADO! Z = %.2f m - Comando LAND enfileirado",
       *land_cmd_id_, z);
@@ -771,7 +769,7 @@ void DroneControllerCompleto::waypoints_4d_callback(
 
   if (msg->waypoints.size() == 1 && last_z < config_.land_z_threshold) {
     RCLCPP_WARN(this->get_logger(), "\n🛬🛬🛬 4D POUSO DETECTADO! Z_final = %.2f m", last_z);
-    trigger_landing(poses[0].position.x, poses[0].position.y, last_z);
+    trigger_landing(last_z);
     trajectory_4d_mode_ = false;
     return;
   }

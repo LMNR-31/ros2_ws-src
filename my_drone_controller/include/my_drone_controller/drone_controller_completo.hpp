@@ -80,7 +80,7 @@ private:
   void init_variables();
 
   // ── Landing / activation helpers ────────────────────────────────────────
-  void trigger_landing(double x, double y, double z);
+  void trigger_landing(double z);
   void activate_offboard_arm_if_needed();
 
   // ── Parameter handlers ───────────────────────────────────────────────────
@@ -101,7 +101,7 @@ private:
   void yaw_override_callback(const drone_control::msg::YawOverride::SharedPtr msg);
 
   // ── Waypoint callback helpers (3D) ───────────────────────────────────────
-  void handle_landing_waypoint_command(double x, double y, double z);
+  void handle_landing_waypoint_command(double z);
   void handle_single_takeoff_waypoint_command(const geometry_msgs::msg::Pose & pose);
   void log_trajectory_waypoints_3d(const std::vector<geometry_msgs::msg::Pose> & poses);
   void activate_trajectory_in_hover(size_t waypoint_count);
@@ -110,7 +110,7 @@ private:
   void waypoints_callback(const geometry_msgs::msg::PoseArray::SharedPtr msg);
 
   // ── Shared waypoint-goal helpers ─────────────────────────────────────────
-  bool check_landing_in_flight(double x, double y, double z);
+  bool check_landing_in_flight(double z);
   bool handle_state4_disarm_reset();
 
   // ── Waypoint-goal callbacks ──────────────────────────────────────────────
