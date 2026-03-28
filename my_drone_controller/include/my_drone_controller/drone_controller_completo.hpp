@@ -29,22 +29,21 @@ namespace drone_control {
 /**
  * @brief Complete drone controller node with command tracking and safety.
  *
- * Implements a 6-state flight state machine:
+ * Implements a 5-state flight state machine:
  *  - State 0: Waiting for waypoint goal
  *  - State 1: Takeoff (OFFBOARD + ARM, climb to hover_altitude)
  *  - State 2: Hover (waiting for trajectory)
  *  - State 3: Executing trajectory
- *  - State 4: Landing / paused
- *  - State 5: Standby on ground (Modo A only — OFFBOARD+ARMED, publishing
- *              low-Z setpoint to hold the drone on the ground without
- *              disarming; exits to State 1 on new flight waypoint)
+ *  - State 4: Landing — waits for ground detection, then DISARMs and resets
+ *              to State 0 to accept a new takeoff command.
  *
  * All drone commands are registered in a CommandQueue so that every
  * operation can be audited and timed out automatically.
  *
- * The `landing_mode` ROS 2 parameter selects the end-of-landing behaviour:
- *  - 0 (Modo A): transition to State 5 — stay OFFBOARD+ARMED on the ground.
- *  - 1 (Modo B): DISARM and full reset to State 0 (default behaviour).
+ * There is a single universal landing flow: after landing is detected the
+ * drone always proceeds to DISARM; once the FCU confirms DISARM all flags
+ * are reset and the system returns to State 0, ready for the next takeoff.
+ * There are no landing modes (Modo A / Modo B) — only this single flow.
  */
 class DroneControllerCompleto : public rclcpp::Node
 {
@@ -85,8 +84,6 @@ private:
   void activate_offboard_arm_if_needed();
 
   // ── Parameter handlers ───────────────────────────────────────────────────
-  bool apply_landing_mode_param(const rclcpp::Parameter & p,
-                                rcl_interfaces::msg::SetParametersResult & result);
   bool apply_enabled_param(const rclcpp::Parameter & p,
                            rcl_interfaces::msg::SetParametersResult & result);
   bool apply_override_active_param(const rclcpp::Parameter & p,
@@ -115,9 +112,6 @@ private:
   // ── Shared waypoint-goal helpers ─────────────────────────────────────────
   bool check_landing_in_flight(double x, double y, double z);
   bool handle_state4_disarm_reset();
-  bool handle_state5_flight_waypoint(const std::string & label,
-                                     double x, double y, double z,
-                                     const geometry_msgs::msg::PoseStamped & ps);
 
   // ── Waypoint-goal callbacks ──────────────────────────────────────────────
   void waypoint_goal_callback(const geometry_msgs::msg::PoseStamped::SharedPtr msg);
@@ -156,12 +150,8 @@ private:
 
   // State 4 — landing completers
   void reset_after_landing();
-  void complete_landing_mode_a();
-  void complete_landing_mode_b();
+  void complete_landing();
   void handle_state4_landing();
-
-  // State 5 — standby on ground
-  void handle_state5_standby();
 
   // ── Configuration ─────────────────────────────────────────────────────────
   DroneConfig config_;
@@ -191,7 +181,7 @@ private:
   mavros_msgs::msg::State current_state_;
 
   // ── FSM state variables ───────────────────────────────────────────────────
-  int state_voo_;   ///< 0=wait, 1=takeoff, 2=hover, 3=trajectory, 4=landing, 5=standby
+  int state_voo_;   ///< 0=wait, 1=takeoff, 2=hover, 3=trajectory, 4=landing
   bool controlador_ativo_;
   bool pouso_em_andamento_;
   bool offboard_activated_;
@@ -244,21 +234,9 @@ private:
   bool trajectory_4d_mode_;
   std::vector<double> trajectory_yaws_;
 
-  // ── Landing mode ─────────────────────────────────────────────────────────
-  /// 0=Modo A (standby no chão, OFFBOARD+ARMED), 1=Modo B (DISARM, padrão)
-  int landing_mode_{1};
-
   // ── Control flags ────────────────────────────────────────────────────────
   bool enabled_{true};
   bool override_active_{false};
-
-  // ── Ground anchor (Mode A standby) ───────────────────────────────────────
-  double ground_hold_x_{0.0};
-  double ground_hold_y_{0.0};
-  double ground_hold_z_{0.01};
-
-  // ── State 5 recovery timer ────────────────────────────────────────────────
-  rclcpp::Time state5_recovery_time_;
 
   // ── Thread safety ────────────────────────────────────────────────────────
   std::mutex mutex_;
