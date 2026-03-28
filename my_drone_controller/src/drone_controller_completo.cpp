@@ -17,9 +17,9 @@ DroneControllerCompleto::DroneControllerCompleto()
 {
   RCLCPP_INFO(this->get_logger(), "\n");
   RCLCPP_INFO(this->get_logger(), "╔════════════════════════════════════════════════════════════╗");
-  RCLCPP_INFO(this->get_logger(), "║  🚁 CONTROLADOR INTELIGENTE DE DRONE - VERSÃO FINAL      ║");
+  RCLCPP_INFO(this->get_logger(), "║      🚁 CONTROLADOR INTELIGENTE DE DRONE - MODULAR       ║");
   RCLCPP_INFO(this->get_logger(), "║     COM ATIVAÇÃO OFFBOARD + ARM + DETECÇÃO DE POUSO     ║");
-  RCLCPP_INFO(this->get_logger(), "║               345 LINHAS - CÓDIGO COMPLETO               ║");
+  RCLCPP_INFO(this->get_logger(), "║         FSM 6 ESTADOS — CÓDIGO LIMPO E MODULARIZADO      ║");
   RCLCPP_INFO(this->get_logger(), "╚════════════════════════════════════════════════════════════╝\n");
 
   load_parameters();
