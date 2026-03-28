@@ -116,6 +116,20 @@ public:
   /// @brief Persist the full command history to a structured log file.
   void save_log(const std::string & filename) const;
 
+  /**
+   * @brief Cancel all pending commands, moving them to FAILED in the history.
+   *
+   * Called during reset_after_landing() to flush stale pending entries left
+   * from the previous flight cycle (e.g. trajectory that was interrupted mid-
+   * flight). Without this cleanup, check_timeouts() would later mark those
+   * entries as TIMEOUT, producing confusing log noise and (in theory) a spurious
+   * timeout callback for a command ID that the controller no longer tracks.
+   *
+   * Implemented as "mark FAILED + move to history" so that the full audit trail
+   * is preserved in the log file while the pending_ map starts clean.
+   */
+  void cancel_all_pending();
+
 private:
   mutable std::mutex mutex_;
   uint64_t next_id_{1};

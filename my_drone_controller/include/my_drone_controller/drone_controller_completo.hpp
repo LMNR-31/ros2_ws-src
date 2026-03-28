@@ -117,7 +117,9 @@ private:
   /// Returns true when any flag from the previous flight cycle was not reset.
   bool has_dirty_takeoff_state() const {
     return takeoff_cmd_id_.has_value() || activation_confirmed_ ||
-           offboard_activated_ || disarm_requested_ || pouso_em_andamento_;
+           offboard_activated_ || disarm_requested_ || pouso_em_andamento_ ||
+           trajectory_cmd_id_.has_value() || hover_cmd_id_.has_value() ||
+           state_voo_ != 0;
   }
 
   // ── Waypoint-goal callbacks ──────────────────────────────────────────────
