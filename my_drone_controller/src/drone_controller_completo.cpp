@@ -475,12 +475,30 @@ void DroneControllerCompleto::handle_single_takeoff_waypoint_command(
   //    bloqueiem o novo takeoff. Após um pouso completo e reset_after_landing(),
   //    todos esses valores já devem ser zero/false. Este bloco é uma salvaguarda
   //    extra para robustez em caso de sequência rápida ou estado inesperado.
-  if (takeoff_cmd_id_ || activation_confirmed_ || offboard_activated_ || disarm_requested_) {
+  //
+  //    Hipóteses conhecidas para estado sujo neste ponto:
+  //    1. Takeoff recebido antes do FCU confirmar o DISARM do ciclo anterior
+  //       → disarm_requested_=true e/ou takeoff_cmd_id_ ainda válido.
+  //    2. Corrida de callbacks: novo waypoint chega enquanto reset_after_landing()
+  //       ainda está em andamento no ciclo de controle.
+  //    3. Sequência rápida: operador envia takeoff logo após pouso, antes que
+  //       handle_state4_landing() processe o DISARM confirmado pelo FCU.
+  //    4. Bug ou crash anteriores que interromperam o fluxo sem reset completo.
+  if (has_dirty_takeoff_state()) {
     RCLCPP_WARN(this->get_logger(),
-      "[TAKEOFF] Detectado estado sujo de ciclo anterior — limpando antes de novo takeoff.");
+      "[TAKEOFF] Detectado estado sujo de ciclo anterior — limpando antes de novo takeoff. "
+      "takeoff_cmd_id_=%s | activation_confirmed_=%d | offboard_activated_=%d "
+      "| disarm_requested_=%d | pouso_em_andamento_=%d | state_voo_=%d",
+      takeoff_cmd_id_ ? "set" : "empty",
+      static_cast<int>(activation_confirmed_),
+      static_cast<int>(offboard_activated_),
+      static_cast<int>(disarm_requested_),
+      static_cast<int>(pouso_em_andamento_),
+      state_voo_);
     offboard_activated_ = false;    // será re-ativado em activate_offboard_arm_if_needed()
     activation_confirmed_ = false;  // será re-confirmado pelo FCU após ARM+OFFBOARD
     disarm_requested_ = false;      // DISARM antigo já não é mais relevante
+    pouso_em_andamento_ = false;    // pouso anterior considerado encerrado
     takeoff_cmd_id_.reset();        // descarta ID de takeoff anterior (se houver)
   }
 
@@ -590,6 +608,16 @@ void DroneControllerCompleto::waypoints_callback(
         "⚠️ [TAKEOFF] Ignorado: drone ainda em estado 4 (pouso/DISARM pendente). "
         "Aguardando reset completo antes de aceitar novo takeoff.");
       return;
+    }
+    // Guard: warn if a new takeoff arrives while the drone is already in flight.
+    // Hipóteses: operador enviou takeoff durante voo (estado 1/2/3) por engano,
+    // ou o sistema de missão reiniciou sem esperar o pouso anterior completar.
+    if (is_in_flight()) {
+      RCLCPP_WARN(this->get_logger(),
+        "⚠️ [TAKEOFF] Novo takeoff recebido enquanto drone em ESTADO %d (em voo). "
+        "Estado inconsistente — reiniciando ciclo de decolagem. "
+        "(Hipótese: missão reenviada antes do pouso ou crash de estado da FSM.)",
+        state_voo_);
     }
     handle_single_takeoff_waypoint_command(msg->poses[0]);
     return;
@@ -815,23 +843,41 @@ void DroneControllerCompleto::waypoints_4d_callback(
         "Aguardando reset completo antes de aceitar novo takeoff.");
       return;
     }
+    // Guard: warn if a new takeoff arrives while the drone is already in flight.
+    // Hipóteses: operador enviou takeoff durante voo (estado 1/2/3) por engano,
+    // ou o sistema de missão reiniciou sem esperar o pouso anterior completar.
+    if (is_in_flight()) {
+      RCLCPP_WARN(this->get_logger(),
+        "⚠️ [4D TAKEOFF] Novo takeoff recebido enquanto drone em ESTADO %d (em voo). "
+        "Estado inconsistente — reiniciando ciclo de decolagem. "
+        "(Hipótese: missão reenviada antes do pouso ou crash de estado da FSM.)",
+        state_voo_);
+    }
 
     RCLCPP_INFO(this->get_logger(),
       "\n⬆️ 4D WAYPOINT DE LEVANTAMENTO recebido: X=%.2f Y=%.2f Z=%.2f yaw=%.3f rad",
       poses[0].position.x, poses[0].position.y, poses[0].position.z, yaws[0]);
 
     // Defensive cleanup: clear any stale flags left over from the previous flight cycle.
-    if (takeoff_cmd_id_ || activation_confirmed_ || offboard_activated_ || disarm_requested_) {
+    // Hipóteses conhecidas para estado sujo neste ponto:
+    // 1. Takeoff recebido antes do FCU confirmar o DISARM do ciclo anterior.
+    // 2. Corrida de callbacks: novo waypoint chega enquanto reset_after_landing() ainda executa.
+    // 3. Sequência rápida: operador envia takeoff logo após pouso.
+    if (has_dirty_takeoff_state()) {
       RCLCPP_WARN(this->get_logger(),
         "[4D TAKEOFF] Detectado estado sujo de ciclo anterior — limpando antes de novo takeoff. "
-        "takeoff_cmd_id_=%s | activation_confirmed_=%d | offboard_activated_=%d | disarm_requested_=%d",
+        "takeoff_cmd_id_=%s | activation_confirmed_=%d | offboard_activated_=%d "
+        "| disarm_requested_=%d | pouso_em_andamento_=%d | state_voo_=%d",
         takeoff_cmd_id_ ? "set" : "empty",
         static_cast<int>(activation_confirmed_),
         static_cast<int>(offboard_activated_),
-        static_cast<int>(disarm_requested_));
+        static_cast<int>(disarm_requested_),
+        static_cast<int>(pouso_em_andamento_),
+        state_voo_);
       offboard_activated_ = false;
       activation_confirmed_ = false;
       disarm_requested_ = false;
+      pouso_em_andamento_ = false;
       takeoff_cmd_id_.reset();
     }
 
@@ -1354,6 +1400,19 @@ void DroneControllerCompleto::handle_state3_trajectory()
 
 void DroneControllerCompleto::reset_after_landing()
 {
+  // Este método é chamado SOMENTE após DISARM confirmado pelo FCU
+  // (handle_state4_landing → complete_landing → aguarda armed==false → aqui),
+  // ou diretamente por handle_state4_disarm_reset() quando o drone já está
+  // desarmado no momento em que um novo waypoint chega.
+  //
+  // Se reset_after_landing() NÃO for chamado no momento esperado, as flags
+  // permanecerão "sujas" e serão detectadas no próximo callback de takeoff.
+  // Cenários conhecidos que podem causar esse skip:
+  //   A. FCU demora/recusa DISARM → handle_state4_landing() fica no loop
+  //      de espera; se um novo takeoff chegar antes, handle_state4_disarm_reset()
+  //      bloqueia o comando, mas as flags ainda ficam pendentes.
+  //   B. Crash ou restart do nó durante o ciclo de pouso.
+  //   C. Override externo (override_active=true) que congela a FSM.
   RCLCPP_WARN(this->get_logger(),
     "[RESET] reset_after_landing() chamado — zerando todas as flags e comandos do sistema de pouso.");
 
