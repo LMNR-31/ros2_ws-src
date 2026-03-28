@@ -484,22 +484,31 @@ void DroneControllerCompleto::handle_single_takeoff_waypoint_command(
   //    3. Sequência rápida: operador envia takeoff logo após pouso, antes que
   //       handle_state4_landing() processe o DISARM confirmado pelo FCU.
   //    4. Bug ou crash anteriores que interromperam o fluxo sem reset completo.
+  //
+  //    Reset "extra" pós-trajetória: chamamos reset_after_landing() completo
+  //    (em vez de apenas apagar flags individualmente) para garantir que:
+  //    a) Todos os IDs de comando do ciclo anterior são descartados.
+  //    b) Comandos pendentes na cmd_queue_ (e.g. TRAJECTORY interrompida) são
+  //       marcados como FAILED para não aparecerem como TIMEOUT futuramente.
+  //    c) Flags de trajetória (trajectory_started_, current_waypoint_idx_,
+  //       hover_cmd_id_, trajectory_cmd_id_) são zeradas junto com as demais.
+  //    Isso é especialmente necessário após voos com trajetória (estado 3),
+  //    onde o ciclo de pouso pode não ter completado normalmente.
   if (has_dirty_takeoff_state()) {
     RCLCPP_WARN(this->get_logger(),
       "[TAKEOFF] Detectado estado sujo de ciclo anterior — limpando antes de novo takeoff. "
       "takeoff_cmd_id_=%s | activation_confirmed_=%d | offboard_activated_=%d "
-      "| disarm_requested_=%d | pouso_em_andamento_=%d | state_voo_=%d",
+      "| disarm_requested_=%d | pouso_em_andamento_=%d | state_voo_=%d "
+      "| trajectory_cmd_id_=%s | hover_cmd_id_=%s",
       takeoff_cmd_id_ ? "set" : "empty",
       static_cast<int>(activation_confirmed_),
       static_cast<int>(offboard_activated_),
       static_cast<int>(disarm_requested_),
       static_cast<int>(pouso_em_andamento_),
-      state_voo_);
-    offboard_activated_ = false;    // será re-ativado em activate_offboard_arm_if_needed()
-    activation_confirmed_ = false;  // será re-confirmado pelo FCU após ARM+OFFBOARD
-    disarm_requested_ = false;      // DISARM antigo já não é mais relevante
-    pouso_em_andamento_ = false;    // pouso anterior considerado encerrado
-    takeoff_cmd_id_.reset();        // descarta ID de takeoff anterior (se houver)
+      state_voo_,
+      trajectory_cmd_id_ ? "set" : "empty",
+      hover_cmd_id_ ? "set" : "empty");
+    reset_after_landing();  // reset completo: flags + IDs + fila de comandos
   }
 
   last_waypoint_goal_.pose = pose;
@@ -863,22 +872,26 @@ void DroneControllerCompleto::waypoints_4d_callback(
     // 1. Takeoff recebido antes do FCU confirmar o DISARM do ciclo anterior.
     // 2. Corrida de callbacks: novo waypoint chega enquanto reset_after_landing() ainda executa.
     // 3. Sequência rápida: operador envia takeoff logo após pouso.
+    //
+    // Reset "extra" pós-trajetória: usamos reset_after_landing() completo (em vez de
+    // apagar flags individualmente) para garantir que IDs de trajetória/hover pendentes
+    // e comandos na cmd_queue_ do ciclo anterior também sejam limpos. Isso é crucial
+    // para missões com múltiplos voos consecutivos após trajetória (estado 3).
     if (has_dirty_takeoff_state()) {
       RCLCPP_WARN(this->get_logger(),
         "[4D TAKEOFF] Detectado estado sujo de ciclo anterior — limpando antes de novo takeoff. "
         "takeoff_cmd_id_=%s | activation_confirmed_=%d | offboard_activated_=%d "
-        "| disarm_requested_=%d | pouso_em_andamento_=%d | state_voo_=%d",
+        "| disarm_requested_=%d | pouso_em_andamento_=%d | state_voo_=%d "
+        "| trajectory_cmd_id_=%s | hover_cmd_id_=%s",
         takeoff_cmd_id_ ? "set" : "empty",
         static_cast<int>(activation_confirmed_),
         static_cast<int>(offboard_activated_),
         static_cast<int>(disarm_requested_),
         static_cast<int>(pouso_em_andamento_),
-        state_voo_);
-      offboard_activated_ = false;
-      activation_confirmed_ = false;
-      disarm_requested_ = false;
-      pouso_em_andamento_ = false;
-      takeoff_cmd_id_.reset();
+        state_voo_,
+        trajectory_cmd_id_ ? "set" : "empty",
+        hover_cmd_id_ ? "set" : "empty");
+      reset_after_landing();  // reset completo: flags + IDs + fila de comandos
     }
 
     goal_yaw_rad_ = yaws[0];
@@ -1449,6 +1462,12 @@ void DroneControllerCompleto::reset_after_landing()
   // ── IDs de comandos na fila ───────────────────────────────────────────────
   // Todos os IDs de voo anteriores são descartados; o próximo ciclo
   // gerará novos IDs através do cmd_queue_.enqueue().
+  // cancel_all_pending() é chamado ANTES de resetar os IDs para garantir que
+  // entradas pendentes do ciclo anterior (e.g. TRAJECTORY interrompida, LAND
+  // sem confirmação) sejam marcadas como FAILED no histórico em vez de
+  // aparecerem como TIMEOUT no próximo check_timeouts(). Isso evita mensagens
+  // de log enganosas e mantém a fila limpa para o novo ciclo de voo.
+  cmd_queue_.cancel_all_pending();
   takeoff_cmd_id_.reset();
   hover_cmd_id_.reset();
   trajectory_cmd_id_.reset();

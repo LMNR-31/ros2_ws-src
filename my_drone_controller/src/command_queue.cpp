@@ -100,6 +100,27 @@ size_t CommandQueue::pending_count() const
   return pending_.size();
 }
 
+// ── cancel_all_pending ───────────────────────────────────────────────────────
+
+void CommandQueue::cancel_all_pending()
+{
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto now = std::chrono::system_clock::now();
+  for (auto & [id, cmd] : pending_) {
+    cmd.status = CommandStatus::FAILED;
+    cmd.confirm_time = now;
+    // Update the matching history entry so the log file stays consistent.
+    for (auto & h : history_) {
+      if (h.id == id) {
+        h.status = CommandStatus::FAILED;
+        h.confirm_time = now;
+        break;
+      }
+    }
+  }
+  pending_.clear();
+}
+
 // ── save_log ─────────────────────────────────────────────────────────────────
 
 void CommandQueue::save_log(const std::string & filename) const
