@@ -204,6 +204,8 @@ private:
   double last_z_;
   rclcpp::Time pouso_start_time_;
   bool pouso_start_time_set_;
+  /// true when DISARM has been requested but FCU confirmation is still pending
+  bool disarm_requested_;
 
   // ── Waypoint tracking ────────────────────────────────────────────────────
   geometry_msgs::msg::PoseStamped last_waypoint_goal_;
