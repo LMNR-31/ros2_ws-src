@@ -127,19 +127,16 @@ class DroneStatusMonitor(Node):
         return None
 
     def _get_cpu_ram(self) -> tuple[float, float, float]:
-        """Return (cpu_pct, ram_mb, ram_pct). Falls back to monitor's own process."""
-        if self._drone_proc is None:
-            self._drone_proc = self._find_drone_proc()
-        proc = self._drone_proc or psutil.Process(os.getpid())
-        try:
-            cpu = proc.cpu_percent(interval=None)
-            mem = proc.memory_info()
-            ram_mb = mem.rss / (1024 * 1024)
-            ram_pct = proc.memory_percent()
-            return cpu, ram_mb, ram_pct
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            self._drone_proc = None
-            return 0.0, 0.0, 0.0
+        """
+        Retorna (cpu_pct_total, ram_mb_usada, ram_pct_usada) do sistema inteiro.
+        """
+        # CPU porcentagem do sistema inteiro (averaged over all cores)
+        cpu = psutil.cpu_percent(interval=None)
+        # RAM
+        mem = psutil.virtual_memory()
+        ram_mb = (mem.total - mem.available) / (1024 * 1024)
+        ram_pct = mem.percent
+        return cpu, ram_mb, ram_pct
 
     def _build_alerts(self, cpu: float, ram_pct: float) -> list[str]:
         alerts: list[str] = []
