@@ -457,17 +457,39 @@ void DroneControllerCompleto::handle_single_takeoff_waypoint_command(
   RCLCPP_INFO(this->get_logger(), "   Posição: X=%.2f, Y=%.2f, Z=%.2f",
     pose.position.x, pose.position.y, pose.position.z);
 
+  // ── Log de diagnóstico: estado ANTES da limpeza ───────────────────────────
+  // Após um pouso e reset_after_landing() completos, todos os valores abaixo
+  // devem ser zero/false. Qualquer valor diferente indica reset incompleto.
+  RCLCPP_INFO(this->get_logger(), "🔍 DEBUG FLAGS ANTES (esperado: todos zeros após reset completo):");
+  RCLCPP_INFO(this->get_logger(), "   state_voo_=%d", state_voo_);
+  RCLCPP_INFO(this->get_logger(), "   offboard_activated_=%d", offboard_activated_);
+  RCLCPP_INFO(this->get_logger(), "   activation_confirmed_=%d", activation_confirmed_);
+  RCLCPP_INFO(this->get_logger(), "   disarm_requested_=%d", disarm_requested_);
+  RCLCPP_INFO(this->get_logger(), "   pouso_em_andamento_=%d", pouso_em_andamento_);
+  RCLCPP_INFO(this->get_logger(), "   takeoff_cmd_id_=%s",
+    takeoff_cmd_id_ ? "set" : "empty");
+  RCLCPP_INFO(this->get_logger(), "   takeoff_counter_=%d | current_waypoint_idx_=%d",
+    takeoff_counter_, current_waypoint_idx_);
+
+  // ── Limpeza defensiva: garante que flags "sujas" de um ciclo anterior não
+  //    bloqueiem o novo takeoff. Após um pouso completo e reset_after_landing(),
+  //    todos esses valores já devem ser zero/false. Este bloco é uma salvaguarda
+  //    extra para robustez em caso de sequência rápida ou estado inesperado.
+  if (takeoff_cmd_id_ || activation_confirmed_ || offboard_activated_ || disarm_requested_) {
+    RCLCPP_WARN(this->get_logger(),
+      "[TAKEOFF] Detectado estado sujo de ciclo anterior — limpando antes de novo takeoff.");
+    offboard_activated_ = false;    // será re-ativado em activate_offboard_arm_if_needed()
+    activation_confirmed_ = false;  // será re-confirmado pelo FCU após ARM+OFFBOARD
+    disarm_requested_ = false;      // DISARM antigo já não é mais relevante
+    takeoff_cmd_id_.reset();        // descarta ID de takeoff anterior (se houver)
+  }
+
   last_waypoint_goal_.pose = pose;
   pouso_em_andamento_ = false;
   controlador_ativo_ = false;
   trajectory_started_ = false;
   trajectory_waypoints_.clear();
   current_waypoint_idx_ = 0;
-
-  RCLCPP_INFO(this->get_logger(), "🔍 DEBUG FLAGS ANTES:");
-  RCLCPP_INFO(this->get_logger(), "   offboard_activated_=%d", offboard_activated_);
-  RCLCPP_INFO(this->get_logger(), "   state_voo_=%d", state_voo_);
-  RCLCPP_INFO(this->get_logger(), "   activation_confirmed_=%d", activation_confirmed_);
 
   if (current_state_.armed && current_state_.mode == "OFFBOARD") {
     RCLCPP_INFO(this->get_logger(),
@@ -489,8 +511,10 @@ void DroneControllerCompleto::handle_single_takeoff_waypoint_command(
   takeoff_counter_ = 0;
 
   RCLCPP_INFO(this->get_logger(), "🔍 DEBUG FLAGS DEPOIS:");
+  RCLCPP_INFO(this->get_logger(), "   state_voo_=%d", state_voo_);
   RCLCPP_INFO(this->get_logger(), "   offboard_activated_=%d", offboard_activated_);
-  RCLCPP_INFO(this->get_logger(), "   state_voo_=%d\n", state_voo_);
+  RCLCPP_INFO(this->get_logger(), "   activation_confirmed_=%d", activation_confirmed_);
+  RCLCPP_INFO(this->get_logger(), "   disarm_requested_=%d\n", disarm_requested_);
 }
 
 void DroneControllerCompleto::log_trajectory_waypoints_3d(
@@ -559,6 +583,14 @@ void DroneControllerCompleto::waypoints_callback(
   }
 
   if (msg->poses.size() == 1 && last_z >= config_.land_z_threshold) {
+    // Guard: do not start a new takeoff while the drone is still in state 4
+    // (landing / DISARM pending). Mirrors the behaviour of waypoint_goal_callback().
+    if (handle_state4_disarm_reset()) {
+      RCLCPP_WARN(this->get_logger(),
+        "⚠️ [TAKEOFF] Ignorado: drone ainda em estado 4 (pouso/DISARM pendente). "
+        "Aguardando reset completo antes de aceitar novo takeoff.");
+      return;
+    }
     handle_single_takeoff_waypoint_command(msg->poses[0]);
     return;
   }
@@ -775,9 +807,33 @@ void DroneControllerCompleto::waypoints_4d_callback(
   }
 
   if (msg->waypoints.size() == 1) {
+    // Guard: do not start a new takeoff while the drone is still in state 4
+    // (landing / DISARM pending). Mirrors the behaviour of waypoint_goal_callback().
+    if (handle_state4_disarm_reset()) {
+      RCLCPP_WARN(this->get_logger(),
+        "⚠️ [4D TAKEOFF] Ignorado: drone ainda em estado 4 (pouso/DISARM pendente). "
+        "Aguardando reset completo antes de aceitar novo takeoff.");
+      return;
+    }
+
     RCLCPP_INFO(this->get_logger(),
       "\n⬆️ 4D WAYPOINT DE LEVANTAMENTO recebido: X=%.2f Y=%.2f Z=%.2f yaw=%.3f rad",
       poses[0].position.x, poses[0].position.y, poses[0].position.z, yaws[0]);
+
+    // Defensive cleanup: clear any stale flags left over from the previous flight cycle.
+    if (takeoff_cmd_id_ || activation_confirmed_ || offboard_activated_ || disarm_requested_) {
+      RCLCPP_WARN(this->get_logger(),
+        "[4D TAKEOFF] Detectado estado sujo de ciclo anterior — limpando antes de novo takeoff. "
+        "takeoff_cmd_id_=%s | activation_confirmed_=%d | offboard_activated_=%d | disarm_requested_=%d",
+        takeoff_cmd_id_ ? "set" : "empty",
+        static_cast<int>(activation_confirmed_),
+        static_cast<int>(offboard_activated_),
+        static_cast<int>(disarm_requested_));
+      offboard_activated_ = false;
+      activation_confirmed_ = false;
+      disarm_requested_ = false;
+      takeoff_cmd_id_.reset();
+    }
 
     goal_yaw_rad_ = yaws[0];
     using_4d_goal_ = true;
@@ -1301,30 +1357,61 @@ void DroneControllerCompleto::reset_after_landing()
   RCLCPP_WARN(this->get_logger(),
     "[RESET] reset_after_landing() chamado — zerando todas as flags e comandos do sistema de pouso.");
 
-  state_voo_ = 0;
-  pouso_em_andamento_ = false;
-  controlador_ativo_ = false;
-  trajectory_started_ = false;
+  // ── Flags da máquina de estados de voo ───────────────────────────────────
+  state_voo_ = 0;               // volta ao estado de espera
+  pouso_em_andamento_ = false;  // pouso concluído
+  controlador_ativo_ = false;   // controlador desligado
+  trajectory_started_ = false;  // trajetória encerrada
   pouso_start_time_set_ = false;
-  offboard_activated_ = false;
-  activation_confirmed_ = false;
+
+  // ── Flags de ativação OFFBOARD/ARM ───────────────────────────────────────
+  // Estas DEVEM ser zero para que o próximo takeoff inicie o fluxo de
+  // ativação do zero, sem herdar o estado do voo anterior.
+  offboard_activated_ = false;   // requer re-ativação no próximo takeoff
+  activation_confirmed_ = false; // requer re-confirmação pelo FCU
+
+  // ── Flags de DISARM ───────────────────────────────────────────────────────
+  disarm_requested_ = false;  // DISARM já concluído; evita dupla solicitação
+
+  // ── Contadores e índices ──────────────────────────────────────────────────
   takeoff_counter_ = 0;
-  disarm_requested_ = false;
-  trajectory_waypoints_.clear();
   current_waypoint_idx_ = 0;
+
+  // ── Waypoints e trajetória ────────────────────────────────────────────────
+  trajectory_waypoints_.clear();
+  trajectory_yaws_.clear();     // limpa yaws de trajetória 4D
+  waypoint_goal_received_ = false;
+
+  // ── Flags de modo 4D ──────────────────────────────────────────────────────
+  using_4d_goal_ = false;
+  trajectory_4d_mode_ = false;
+  at_last_waypoint_yaw_fixed_ = false;
+
+  // ── IDs de comandos na fila ───────────────────────────────────────────────
+  // Todos os IDs de voo anteriores são descartados; o próximo ciclo
+  // gerará novos IDs através do cmd_queue_.enqueue().
   takeoff_cmd_id_.reset();
   hover_cmd_id_.reset();
   trajectory_cmd_id_.reset();
   land_cmd_id_.reset();
+  offboard_cmd_id_.reset();
+  arm_cmd_id_.reset();
+  disarm_cmd_id_.reset();
 
   RCLCPP_WARN(this->get_logger(),
-    "[RESET] state_voo_=%d | pouso_em_andamento_=%d | offboard_activated_=%d"
+    "[RESET] Flags após reset:"
+    " state_voo_=%d | pouso_em_andamento_=%d | offboard_activated_=%d"
     " | activation_confirmed_=%d | controlador_ativo_=%d"
-    " | trajectory_started_=%d | takeoff_counter_=%d | current_waypoint_idx_=%d",
+    " | trajectory_started_=%d | takeoff_counter_=%d | current_waypoint_idx_=%d"
+    " | disarm_requested_=%d | using_4d_goal_=%d | trajectory_4d_mode_=%d",
     state_voo_, static_cast<int>(pouso_em_andamento_),
     static_cast<int>(offboard_activated_), static_cast<int>(activation_confirmed_),
     static_cast<int>(controlador_ativo_), static_cast<int>(trajectory_started_),
-    takeoff_counter_, current_waypoint_idx_);
+    takeoff_counter_, current_waypoint_idx_,
+    static_cast<int>(disarm_requested_),
+    static_cast<int>(using_4d_goal_), static_cast<int>(trajectory_4d_mode_));
+  RCLCPP_WARN(this->get_logger(),
+    "[RESET] Sistema pronto para novo ciclo de voo (takeoff → voo → pouso).");
 }
 
 void DroneControllerCompleto::complete_landing()
