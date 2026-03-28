@@ -451,9 +451,9 @@ private:
       "/uav1/mavros/setpoint_raw/local", 10);
     trajectory_finished_pub_ = this->create_publisher<std_msgs::msg::Bool>("/trajectory_finished", 10);
     progress_publisher_ = this->create_publisher<std_msgs::msg::Float32>("/trajectory_progress", 10);
-    RCLCPP_INFO(this->get_logger(), "✓ Publisher criado: /trajectory_progress");
-    RCLCPP_INFO(this->get_logger(), "✓ Publisher criado: /trajectory_finished");
     RCLCPP_INFO(this->get_logger(), "✓ Publisher criado: /uav1/mavros/setpoint_raw/local");
+    RCLCPP_INFO(this->get_logger(), "✓ Publisher criado: /trajectory_finished");
+    RCLCPP_INFO(this->get_logger(), "✓ Publisher criado: /trajectory_progress");
   }
 
   // ==========================================
@@ -1784,14 +1784,15 @@ private:
     double elapsed_time = (this->now() - trajectory_start_time_).seconds();
     int computed_idx = static_cast<int>(elapsed_time / waypoint_duration_);
 
-    // Limitar ao índice máximo (não ultrapassar último waypoint)
-    // Boundary-check: trajectory_waypoints_ is guaranteed non-empty here
-    // (checked above via trajectory_waypoints_.empty()).
+    // Limitar ao índice máximo (não ultrapassar último waypoint).
+    // trajectory_waypoints_ is guaranteed non-empty at this point
+    // (verified by the trajectory_waypoints_.empty() guard above).
     current_waypoint_idx_ = std::min(
       computed_idx,
       static_cast<int>(trajectory_waypoints_.size()) - 1);
 
-    // Explicit bounds guard to prevent out-of-range access.
+    // Defensive bounds guard — protects against potential logic errors or
+    // race conditions that could produce an out-of-range index.
     if (current_waypoint_idx_ < 0 ||
         static_cast<size_t>(current_waypoint_idx_) >= trajectory_waypoints_.size()) {
       RCLCPP_ERROR(this->get_logger(),
