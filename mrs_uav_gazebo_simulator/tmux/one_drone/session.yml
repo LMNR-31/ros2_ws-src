@@ -35,7 +35,7 @@ windows:
         - |
           waitForGazebo; sleep 5
           ros2 service call /mrs_drone_spawner/spawn mrs_msgs/srv/String \
-            "{value: '1 --$UAV_TYPE --enable-rangefinder --enable-bluefox-camera-down --enable-realsense-front --pos -0.85 0.70 1 1.57'}"
+            "{value: '1 --$UAV_TYPE --enable-rangefinder --enable-realsense-down --enable-realsense-front --pos -0.85 0.70 1 1.57'}"
 
   # ── 3. PX4 API ─────────────────────────────────────────────────────────────
   - px4_api:
@@ -53,10 +53,10 @@ windows:
           python3 ./custom_status/drone_status_monitor.py
 
   # ── 5. RViz visualisation ──────────────────────────────────────────────────
-  - rviz:
-      layout: tiled
-      panes:
-        - ros2 run rviz2 rviz2 -d ./rviz.rviz --ros-args -p use_sim_time:=true
+  # - rviz:
+  #     layout: tiled
+  #     panes:
+  #       - ros2 run rviz2 rviz2 -d ./rviz.rviz --ros-args -p use_sim_time:=true
 
   # ── 6. Drone controller ────────────────────────────────────────────────────
   - drone_controller:
@@ -93,27 +93,7 @@ windows:
       layout: tiled
       panes:
         - |
-          echo "╔══════════════════════════════════════════╗"
-          echo "║       🚁 DRONE DEBUG CONSOLE             ║"
-          echo "╠══════════════════════════════════════════╣"
-          echo "║ Comandos úteis:                          ║"
-          echo "║  ros2 topic list                         ║"
-          echo "║  ros2 topic echo /uav1/mavros/state      ║"
-          echo "║  ros2 topic echo /uav1/mavros/battery    ║"
-          echo "║  ros2 topic pub /drone/waypoint ...      ║"
-          echo "║  tail -f /tmp/drone_commands.log         ║"
-          echo "║  tail -f /tmp/drone_logs/*.log           ║"
-          echo "╠══════════════════════════════════════════╣"
-          echo "║ Hover supervisor enable/disable:         ║"
-          echo "║  Disable (let MPC control):              ║"
-          echo "║   ros2 service call                      ║"
-          echo "║   /hover_supervisor_node/set_enabled     ║"
-          echo "║   std_srvs/srv/SetBool '{data: false}'   ║"
-          echo "║  Enable (resume hover hold):             ║"
-          echo "║   ros2 service call                      ║"
-          echo "║   /hover_supervisor_node/set_enabled     ║"
-          echo "║   std_srvs/srv/SetBool '{data: true}'    ║"
-          echo "╚══════════════════════════════════════════╝"
+          
           source ~/ros2_ws/install/setup.bash
           bash
 

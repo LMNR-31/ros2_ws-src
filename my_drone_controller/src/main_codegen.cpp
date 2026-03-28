@@ -23,6 +23,8 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include "std_msgs/msg/bool.hpp"
+#include "std_msgs/msg/float32.hpp"
 
 using namespace std::chrono_literals;
 
@@ -423,7 +425,11 @@ public:
     // ==========================================
     raw_pub_ = this->create_publisher<mavros_msgs::msg::PositionTarget>(
       "/uav1/mavros/setpoint_raw/local", 10);
-
+      trajectory_finished_pub_ = this->create_publisher<std_msgs::msg::Bool>("/trajectory_finished", 10);
+      progress_publisher_ = this->create_publisher<std_msgs::msg::Float32>("/trajectory_progress", 10);
+      RCLCPP_INFO(this->get_logger(), "✓ Publisher criado: /trajectory_progress");
+      RCLCPP_INFO(this->get_logger(), "✓ Publisher criado: /trajectory_finished");
+      RCLCPP_INFO(this->get_logger(), "✓ Publisher criado: /uav1/mavros/setpoint_raw/local");
     RCLCPP_INFO(this->get_logger(), "✓ Publisher criado: /uav1/mavros/setpoint_raw/local");
 
     // ==========================================
@@ -1546,6 +1552,17 @@ private:
             "✅ OFFBOARD+ARM CONFIRMADOS! Iniciando decolagem...");
           activation_confirmed_ = true;
           takeoff_counter_ = 0;
+          
+          if (!takeoff_cmd_id_) {
+            takeoff_cmd_id_ = cmd_queue_.enqueue(
+                CommandType::TAKEOFF,
+                {{"x", std::to_string(last_waypoint_goal_.pose.position.x)},
+                {"y", std::to_string(last_waypoint_goal_.pose.position.y)},
+                {"z", std::to_string(config_.hover_altitude)}});
+            RCLCPP_INFO(this->get_logger(),
+                "📋 [ID=%lu] Comando TAKEOFF enfileirado após ARM+OFFBOARD confirmado!", *takeoff_cmd_id_);
+          }
+
         } else if ((this->now() - activation_time_).seconds() > config_.activation_timeout) {
           // Timeout: tentar novamente
           RCLCPP_WARN(this->get_logger(),
@@ -1807,6 +1824,15 @@ private:
           RCLCPP_INFO(this->get_logger(),
             "✅ [ID=%lu] TRAJECTORY confirmada - todos os waypoints visitados", *trajectory_cmd_id_);
           trajectory_cmd_id_.reset();
+          
+          
+          std_msgs::msg::Bool done_msg;
+          done_msg.data = true;
+          trajectory_finished_pub_->publish(done_msg);
+          std_msgs::msg::Float32 progress_msg;
+          progress_msg.data = 100.0; // CORRETO
+          progress_publisher_->publish(progress_msg);
+          RCLCPP_INFO(this->get_logger(), "📢 Trajetória terminada! Publicado /trajectory_finished = true");
         }
       }
     }
@@ -1978,7 +2004,8 @@ private:
 
   // Publishers
   rclcpp::Publisher<mavros_msgs::msg::PositionTarget>::SharedPtr raw_pub_;
-
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr trajectory_finished_pub_;
+  rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr progress_publisher_;
   // Subscribers
   rclcpp::Subscription<mavros_msgs::msg::State>::SharedPtr state_sub_;
   rclcpp::Subscription<geometry_msgs::msg::PoseArray>::SharedPtr waypoints_sub_;

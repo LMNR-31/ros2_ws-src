@@ -83,6 +83,7 @@ private:
     CONFIRM_ACTIVATION,
     ACTIVATED,
     PUBLISH_WAYPOINTS,
+    WAIT_BEFORE_VERIFY,
     VERIFY_TAKEOFF,
     WAIT_BEFORE_RETRY,
     FINISH
@@ -181,11 +182,25 @@ private:
     case StateMachine::PUBLISH_WAYPOINTS:
       if ((this->now() - publish_time_) > rclcpp::Duration(2s))
       {
-        RCLCPP_INFO(this->get_logger(), "✅ Waypoints de levantamento enviados. Verificando decolagem...\n");
+        RCLCPP_INFO(this->get_logger(), "✅ Waypoints de levantamento enviados. Aguardando antes da verificação...\n");
+        state_ = StateMachine::WAIT_BEFORE_VERIFY;
+        wait_retry_start_time_ = this->now();
+      }
+      break;
+
+    case StateMachine::WAIT_BEFORE_VERIFY:
+      if (cycle_count_ % 20 == 0)
+      {
+        auto elapsed = (this->now() - wait_retry_start_time_).seconds();
+        RCLCPP_INFO(this->get_logger(), "⏳ Esperando %.0fs/3s antes de verificar decolagem...", elapsed);
+      }
+      if ((this->now() - wait_retry_start_time_) > rclcpp::Duration(3s))
+      {
+        RCLCPP_INFO(this->get_logger(), "➡️ Iniciando verificação de decolagem...");
         state_ = StateMachine::VERIFY_TAKEOFF;
         verify_start_time_ = this->now();
       }
-      break;
+      break; 
 
     case StateMachine::VERIFY_TAKEOFF:
       if (cycle_count_ % 20 == 0)
@@ -221,7 +236,7 @@ private:
           if (verify_attempts_ < max_verify_attempts_)
           {
             RCLCPP_WARN(this->get_logger(),
-              "⚠️ Decolagem inefetiva, aguardando 5s antes de tentar novamente... (%d/%d)",
+              "⚠️ Decolagem inefetiva, aguardando 3s antes de tentar novamente... (%d/%d)",
               verify_attempts_, max_verify_attempts_);
             state_ = StateMachine::WAIT_BEFORE_RETRY;
             wait_retry_start_time_ = this->now();
@@ -241,9 +256,9 @@ private:
       if (cycle_count_ % 20 == 0)
       {
         auto elapsed = (this->now() - wait_retry_start_time_).seconds();
-        RCLCPP_INFO(this->get_logger(), "⏳ Aguardando antes de retry... (%.0fs/5s)", elapsed);
+        RCLCPP_INFO(this->get_logger(), "⏳ Aguardando antes de retry... (%.0fs/3s)", elapsed);
       }
-      if ((this->now() - wait_retry_start_time_) > rclcpp::Duration(5s))
+      if ((this->now() - wait_retry_start_time_) > rclcpp::Duration(3s))
       {
         RCLCPP_INFO(this->get_logger(), "📡 Retentando decolagem... (%d/%d)",
           verify_attempts_, max_verify_attempts_);
@@ -353,7 +368,7 @@ private:
 
   // Verificação de decolagem
   static constexpr double altitude_threshold_{0.5};
-  static constexpr int max_verify_attempts_{5};
+  static constexpr int max_verify_attempts_{6};
   rclcpp::Time verify_start_time_;
   rclcpp::Time wait_retry_start_time_;
   int verify_attempts_{0};

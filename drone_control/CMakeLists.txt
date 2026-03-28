@@ -130,6 +130,10 @@ install(PROGRAMS
   RENAME camera_viewer
 )
 
+add_executable(supervisor src/supervisor.cpp)
+ament_target_dependencies(supervisor rclcpp std_msgs)
+install(TARGETS supervisor DESTINATION lib/${PROJECT_NAME})
+
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   # the following line skips the linter which checks for copyrights
