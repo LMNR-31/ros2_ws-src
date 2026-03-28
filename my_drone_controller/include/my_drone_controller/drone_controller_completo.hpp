@@ -112,6 +112,13 @@ private:
   // ── Shared waypoint-goal helpers ─────────────────────────────────────────
   bool check_landing_in_flight(double z);
   bool handle_state4_disarm_reset();
+  /// Returns true when the FSM is actively in flight (states 1–3).
+  bool is_in_flight() const { return state_voo_ == 1 || state_voo_ == 2 || state_voo_ == 3; }
+  /// Returns true when any flag from the previous flight cycle was not reset.
+  bool has_dirty_takeoff_state() const {
+    return takeoff_cmd_id_.has_value() || activation_confirmed_ ||
+           offboard_activated_ || disarm_requested_ || pouso_em_andamento_;
+  }
 
   // ── Waypoint-goal callbacks ──────────────────────────────────────────────
   void waypoint_goal_callback(const geometry_msgs::msg::PoseStamped::SharedPtr msg);
