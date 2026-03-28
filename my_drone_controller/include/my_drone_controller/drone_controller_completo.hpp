@@ -155,6 +155,7 @@ private:
   void handle_state3_trajectory();
 
   // State 4 — landing completers
+  void reset_after_landing();
   void complete_landing_mode_a();
   void complete_landing_mode_b();
   void handle_state4_landing();
