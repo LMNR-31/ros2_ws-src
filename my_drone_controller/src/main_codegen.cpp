@@ -357,9 +357,30 @@ public:
     RCLCPP_INFO(this->get_logger(), "║               345 LINHAS - CÓDIGO COMPLETO               ║");
     RCLCPP_INFO(this->get_logger(), "╚════════════════════════════════════════════════════════════╝\n");
 
-    // ==========================================
-    // CARREGAR CONFIGURAÇÃO (ROS 2 parâmetros)
-    // ==========================================
+    load_parameters();
+    setup_publishers();
+    setup_subscribers();
+    setup_services();
+    init_variables();
+
+    RCLCPP_INFO(this->get_logger(), "\n📊 STATUS INICIAL:");
+    RCLCPP_INFO(this->get_logger(), "   Estado: %d (aguardando waypoint)", state_voo_);
+    RCLCPP_INFO(this->get_logger(), "   Controlador: %s", controlador_ativo_ ? "ATIVO" : "INATIVO");
+    RCLCPP_INFO(this->get_logger(), "   Pouso: %s\n", pouso_em_andamento_ ? "SIM" : "NÃO");
+  }
+
+private:
+
+  // ==========================================
+  // SETUP: CARREGAR CONFIGURAÇÃO (ROS 2 parâmetros)
+  // ==========================================
+  /**
+   * @brief Declare and load all ROS 2 parameters into config_ and control flags.
+   *
+   * Registers a dynamic-parameter callback so values can be changed at runtime
+   * without restarting the node.
+   */
+  void load_parameters() {
     this->declare_parameter("hover_altitude",        config_.hover_altitude);
     this->declare_parameter("hover_altitude_margin", config_.hover_altitude_margin);
     this->declare_parameter("max_altitude",          config_.max_altitude);
@@ -419,22 +440,27 @@ public:
     RCLCPP_INFO(this->get_logger(),
       "⚙️  Configuração de Altitude: Mínima=%.2f m | Pouso detectado: Z < %.2f m | Máxima=%.2f m",
       config_.min_altitude, config_.land_z_threshold, config_.max_altitude);
+  }
 
-    // ==========================================
-    // PUBLISHERS
-    // ==========================================
+  // ==========================================
+  // SETUP: PUBLISHERS
+  // ==========================================
+  /// @brief Create all ROS 2 publishers used by this node.
+  void setup_publishers() {
     raw_pub_ = this->create_publisher<mavros_msgs::msg::PositionTarget>(
       "/uav1/mavros/setpoint_raw/local", 10);
-      trajectory_finished_pub_ = this->create_publisher<std_msgs::msg::Bool>("/trajectory_finished", 10);
-      progress_publisher_ = this->create_publisher<std_msgs::msg::Float32>("/trajectory_progress", 10);
-      RCLCPP_INFO(this->get_logger(), "✓ Publisher criado: /trajectory_progress");
-      RCLCPP_INFO(this->get_logger(), "✓ Publisher criado: /trajectory_finished");
-      RCLCPP_INFO(this->get_logger(), "✓ Publisher criado: /uav1/mavros/setpoint_raw/local");
+    trajectory_finished_pub_ = this->create_publisher<std_msgs::msg::Bool>("/trajectory_finished", 10);
+    progress_publisher_ = this->create_publisher<std_msgs::msg::Float32>("/trajectory_progress", 10);
     RCLCPP_INFO(this->get_logger(), "✓ Publisher criado: /uav1/mavros/setpoint_raw/local");
+    RCLCPP_INFO(this->get_logger(), "✓ Publisher criado: /trajectory_finished");
+    RCLCPP_INFO(this->get_logger(), "✓ Publisher criado: /trajectory_progress");
+  }
 
-    // ==========================================
-    // SUBSCRIBERS
-    // ==========================================
+  // ==========================================
+  // SETUP: SUBSCRIBERS
+  // ==========================================
+  /// @brief Create all ROS 2 subscriptions used by this node.
+  void setup_subscribers() {
     state_sub_ = this->create_subscription<mavros_msgs::msg::State>(
       "/uav1/mavros/state", 10,
       [this](const mavros_msgs::msg::State::SharedPtr msg) {
@@ -443,13 +469,11 @@ public:
 
     waypoints_sub_ = this->create_subscription<geometry_msgs::msg::PoseArray>(
       "/waypoints", 1,
-      std::bind(&DroneControllerCompleto::waypoints_callback, this, std::placeholders::_1)
-    );
+      std::bind(&DroneControllerCompleto::waypoints_callback, this, std::placeholders::_1));
 
     waypoint_goal_sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
       "/waypoint_goal", 1,
-      std::bind(&DroneControllerCompleto::waypoint_goal_callback, this, std::placeholders::_1)
-    );
+      std::bind(&DroneControllerCompleto::waypoint_goal_callback, this, std::placeholders::_1));
 
     odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
       "/uav1/mavros/local_position/odom", 10,
@@ -467,21 +491,24 @@ public:
       "/waypoints_4d", 1,
       std::bind(&DroneControllerCompleto::waypoints_4d_callback, this, std::placeholders::_1));
 
-    RCLCPP_INFO(this->get_logger(), "✓ Subscribers criados: /uav1/mavros/state, /waypoints, /waypoint_goal, odometria, /uav1/yaw_override/cmd, /waypoint_goal_4d e /waypoints_4d");
+    RCLCPP_INFO(this->get_logger(),
+      "✓ Subscribers criados: /uav1/mavros/state, /waypoints, /waypoint_goal, "
+      "odometria, /uav1/yaw_override/cmd, /waypoint_goal_4d e /waypoints_4d");
+  }
 
-    // ==========================================
-    // SERVICE CLIENTS - ATIVAÇÃO
-    // ==========================================
+  // ==========================================
+  // SETUP: SERVICE CLIENTS + AGUARDAR SERVIÇOS + TIMER
+  // ==========================================
+  /**
+   * @brief Create service clients, wait until MAVROS services are available,
+   *        then start the 100 Hz control timer.
+   */
+  void setup_services() {
     mode_client_ = this->create_client<mavros_msgs::srv::SetMode>("/uav1/mavros/set_mode");
-    arm_client_ = this->create_client<mavros_msgs::srv::CommandBool>("/uav1/mavros/cmd/arming");
-
+    arm_client_  = this->create_client<mavros_msgs::srv::CommandBool>("/uav1/mavros/cmd/arming");
     RCLCPP_INFO(this->get_logger(), "✓ Service Clients criados: set_mode e arming");
 
-    // ==========================================
-    // AGUARDAR SERVIÇOS DISPONÍVEIS
-    // ==========================================
     RCLCPP_INFO(this->get_logger(), "⏳ Aguardando serviços MAVROS...");
-    
     while (!mode_client_->wait_for_service(1s)) {
       RCLCPP_WARN(this->get_logger(), "⏳ Aguardando /uav1/mavros/set_mode...");
     }
@@ -492,18 +519,17 @@ public:
     }
     RCLCPP_INFO(this->get_logger(), "✓ Serviço arming disponível\n");
 
-    // ==========================================
-    // TIMER DO CONTROLE
-    // ==========================================
     timer_ = this->create_wall_timer(
-      std::chrono::milliseconds(10), 
+      std::chrono::milliseconds(10),
       std::bind(&DroneControllerCompleto::control_loop, this));
-
     RCLCPP_INFO(this->get_logger(), "✓ Timer criado: 100 Hz (10ms)");
+  }
 
-    // ==========================================
-    // INICIALIZAÇÃO DE VARIÁVEIS
-    // ==========================================
+  // ==========================================
+  // INICIALIZAÇÃO DE VARIÁVEIS DE ESTADO
+  // ==========================================
+  /// @brief Set all flight-state member variables to their initial (ground) values.
+  void init_variables() {
     state_voo_ = 0;
     controlador_ativo_ = false;
     pouso_em_andamento_ = false;
@@ -545,14 +571,54 @@ public:
     goal_yaw_rad_ = 0.0;
     using_4d_goal_ = false;
     trajectory_4d_mode_ = false;
-
-    RCLCPP_INFO(this->get_logger(), "\n📊 STATUS INICIAL:");
-    RCLCPP_INFO(this->get_logger(), "   Estado: %d (aguardando waypoint)", state_voo_);
-    RCLCPP_INFO(this->get_logger(), "   Controlador: %s", controlador_ativo_ ? "ATIVO" : "INATIVO");
-    RCLCPP_INFO(this->get_logger(), "   Pouso: %s\n", pouso_em_andamento_ ? "SIM" : "NÃO");
   }
 
-private:
+  // ==========================================
+  // HELPER: ACIONAMENTO DE POUSO
+  // ==========================================
+  /**
+   * @brief Transition the FSM into landing state (State 4).
+   *
+   * Sets the common landing flags, enqueues a LAND command, and records
+   * the ground anchor position used by State 5 (Mode A).
+   * Must be called with mutex_ already held.
+   *
+   * @param x  Landing X position [m] — used as ground hold anchor.
+   * @param y  Landing Y position [m] — used as ground hold anchor.
+   * @param z  Detected landing altitude [m] — stored in the LAND command.
+   */
+  void trigger_landing(double x, double y, double z) {
+    pouso_em_andamento_ = true;
+    controlador_ativo_ = false;
+    state_voo_ = 4;
+    land_cmd_id_ = cmd_queue_.enqueue(CommandType::LAND, {{"z", std::to_string(z)}});
+    ground_hold_x_ = x;
+    ground_hold_y_ = y;
+    ground_hold_z_ = std::max(0.01, config_.land_z_threshold);
+  }
+
+  // ==========================================
+  // HELPER: ATIVAR OFFBOARD + ARM (CONDICIONAL)
+  // ==========================================
+  /**
+   * @brief Request OFFBOARD mode and ARM only when not already active.
+   *
+   * If the FCU is already armed and in OFFBOARD mode the call is a no-op so
+   * that existing activation state (offboard_activated_, activation_confirmed_)
+   * is preserved and we avoid an unnecessary re-activation round-trip.
+   * Must be called with mutex_ already held.
+   */
+  void activate_offboard_arm_if_needed() {
+    if (current_state_.armed && current_state_.mode == "OFFBOARD") {
+      return;  // Já ativo — reutiliza ativação existente
+    }
+    offboard_activated_ = false;
+    activation_confirmed_ = false;
+    request_offboard();
+    request_arm();
+    offboard_activated_ = true;
+    activation_time_ = this->now();
+  }
 
   // ==========================================
   // CALLBACK DE PARÂMETROS EM RUNTIME
@@ -861,16 +927,9 @@ private:
         return;
       }
       RCLCPP_WARN(this->get_logger(), "\n🛬🛬🛬 POUSO DETECTADO! Z_final = %.2f m", last_z);
-      pouso_em_andamento_ = true;
-      controlador_ativo_ = false;
-      state_voo_ = 4; // VAI DIRETO PARA ESTADO 4!
-      land_cmd_id_ = cmd_queue_.enqueue(CommandType::LAND, {{"z", std::to_string(last_z)}});
+      trigger_landing(msg->poses[0].position.x, msg->poses[0].position.y, last_z);
       RCLCPP_WARN(this->get_logger(),
         "📋 [ID=%lu] Comando LAND enfileirado", *land_cmd_id_);
-      // Salva ponto de ancoragem para Mode A (ground hold durante e após pouso)
-      ground_hold_x_ = msg->poses[0].position.x;
-      ground_hold_y_ = msg->poses[0].position.y;
-      ground_hold_z_ = std::max(0.01, config_.land_z_threshold);
       RCLCPP_WARN(this->get_logger(),
         "📍 Ancoragem de pouso definida: X=%.2f, Y=%.2f, Z=%.3f",
         ground_hold_x_, ground_hold_y_, ground_hold_z_);
@@ -905,28 +964,13 @@ private:
       RCLCPP_INFO(this->get_logger(), "   state_voo_=%d", state_voo_);
       RCLCPP_INFO(this->get_logger(), "   activation_confirmed_=%d", activation_confirmed_);
 
-      // Se estiver em estado 5 (standby no chão, Modo A) e já OFFBOARD+ARM, não
-      // precisamos resetar as flags nem solicitar ativação novamente.
       if (state_voo_ == 5 &&
           current_state_.armed && current_state_.mode == "OFFBOARD") {
         RCLCPP_INFO(this->get_logger(),
           "🔋 Estado 5: já OFFBOARD+ARM – reutilizando ativação para levantamento...\n");
-        // offboard_activated_ e activation_confirmed_ já estão ok; não reseta
       } else {
-        // Força reativação, independentemente do estado anterior
         RCLCPP_INFO(this->get_logger(), "🔋 Ativando OFFBOARD+ARM para levantamento...\n");
-
-        // Reset explícito ANTES de reativar
-        offboard_activated_ = false;
-        activation_confirmed_ = false;
-
-        // Solicita OFFBOARD MODE e ARM
-        request_offboard();
-        request_arm();
-
-        // Marca como ativado e aguarda confirmação do FCU
-        offboard_activated_ = true;
-        activation_time_ = this->now();
+        activate_offboard_arm_if_needed();
       }
 
       // Enfileira comando de TAKEOFF
@@ -1048,17 +1092,10 @@ private:
 
     // DETECTA POUSO (só em voo: ESTADO 2 ou 3)
     if ((state_voo_ == 2 || state_voo_ == 3) && z < config_.land_z_threshold) {
-      pouso_em_andamento_ = true;
-      controlador_ativo_ = false;
-      state_voo_ = 4;
-      land_cmd_id_ = cmd_queue_.enqueue(CommandType::LAND, {{"z", std::to_string(z)}});
+      trigger_landing(x, y, z);
       RCLCPP_WARN(this->get_logger(),
         "🛬 [ID=%lu] POUSO DETECTADO! Z = %.2f m - Comando LAND enfileirado",
         *land_cmd_id_, z);
-      // Salva ponto de ancoragem para Mode A (ground hold durante e após pouso)
-      ground_hold_x_ = x;
-      ground_hold_y_ = y;
-      ground_hold_z_ = std::max(0.01, config_.land_z_threshold);
       RCLCPP_WARN(this->get_logger(),
         "📍 Ancoragem de pouso definida: X=%.2f, Y=%.2f, Z=%.3f",
         ground_hold_x_, ground_hold_y_, ground_hold_z_);
@@ -1100,16 +1137,10 @@ private:
         if (current_state_.armed && current_state_.mode == "OFFBOARD") {
           RCLCPP_INFO(this->get_logger(),
             "🔋 [ESTADO 5] Já OFFBOARD+ARM – iniciando decolagem diretamente...");
-          // offboard_activated_ e activation_confirmed_ já estão ok
         } else {
           RCLCPP_INFO(this->get_logger(),
             "🔋 [ESTADO 5] Reativando OFFBOARD+ARM para decolagem...");
-          offboard_activated_ = false;
-          activation_confirmed_ = false;
-          request_offboard();
-          request_arm();
-          offboard_activated_ = true;
-          activation_time_ = this->now();
+          activate_offboard_arm_if_needed();
         }
 
         takeoff_cmd_id_ = cmd_queue_.enqueue(
@@ -1197,16 +1228,10 @@ private:
 
     // Detecta pouso (só em voo)
     if ((state_voo_ == 2 || state_voo_ == 3) && z < config_.land_z_threshold) {
-      pouso_em_andamento_ = true;
-      controlador_ativo_ = false;
-      state_voo_ = 4;
-      land_cmd_id_ = cmd_queue_.enqueue(CommandType::LAND, {{"z", std::to_string(z)}});
+      trigger_landing(x, y, z);
       RCLCPP_WARN(this->get_logger(),
         "🛬 [ID=%lu] 4D POUSO DETECTADO! Z = %.2f m - Comando LAND enfileirado",
         *land_cmd_id_, z);
-      ground_hold_x_ = x;
-      ground_hold_y_ = y;
-      ground_hold_z_ = std::max(0.01, config_.land_z_threshold);
       return;
     }
 
@@ -1235,16 +1260,7 @@ private:
         trajectory_started_ = false;
         trajectory_waypoints_.clear();
         current_waypoint_idx_ = 0;
-        if (current_state_.armed && current_state_.mode == "OFFBOARD") {
-          // já ativado
-        } else {
-          offboard_activated_ = false;
-          activation_confirmed_ = false;
-          request_offboard();
-          request_arm();
-          offboard_activated_ = true;
-          activation_time_ = this->now();
-        }
+        activate_offboard_arm_if_needed();
         takeoff_cmd_id_ = cmd_queue_.enqueue(
           CommandType::TAKEOFF,
           {{"x", std::to_string(x)}, {"y", std::to_string(y)},
@@ -1333,13 +1349,7 @@ private:
         return;
       }
       RCLCPP_WARN(this->get_logger(), "\n🛬🛬🛬 4D POUSO DETECTADO! Z_final = %.2f m", last_z);
-      pouso_em_andamento_ = true;
-      controlador_ativo_ = false;
-      state_voo_ = 4;
-      land_cmd_id_ = cmd_queue_.enqueue(CommandType::LAND, {{"z", std::to_string(last_z)}});
-      ground_hold_x_ = poses[0].position.x;
-      ground_hold_y_ = poses[0].position.y;
-      ground_hold_z_ = std::max(0.01, config_.land_z_threshold);
+      trigger_landing(poses[0].position.x, poses[0].position.y, last_z);
       trajectory_4d_mode_ = false;
       return;
     }
@@ -1364,16 +1374,7 @@ private:
       trajectory_yaws_.clear();
       current_waypoint_idx_ = 0;
 
-      if (state_voo_ == 5 && current_state_.armed && current_state_.mode == "OFFBOARD") {
-        // reutiliza ativação
-      } else {
-        offboard_activated_ = false;
-        activation_confirmed_ = false;
-        request_offboard();
-        request_arm();
-        offboard_activated_ = true;
-        activation_time_ = this->now();
-      }
+      activate_offboard_arm_if_needed();
       takeoff_cmd_id_ = cmd_queue_.enqueue(
         CommandType::TAKEOFF,
         {{"x", std::to_string(poses[0].position.x)},
@@ -1461,6 +1462,13 @@ private:
   // ==========================================
   // LOOP PRINCIPAL DE CONTROLE
   // ==========================================
+  /**
+   * @brief 100 Hz control loop — preamble guards + FSM state dispatch.
+   *
+   * Handles cross-cutting concerns (disabled check, yaw-override watchdog,
+   * external override hold) before delegating the actual flight logic to the
+   * per-state handler methods (handle_state0_* … handle_state5_*).
+   */
   void control_loop() {
     std::lock_guard<std::mutex> lock(mutex_);
 
@@ -1516,482 +1524,522 @@ private:
       cmd_queue_.save_log("/tmp/drone_commands.log");
     }
 
-    // ==========================================
-    // ESTADO 0: AGUARDANDO NOVO WAYPOINT
-    // ==========================================
-    if (state_voo_ == 0) {
+    // ── Despacha para o método do estado atual ─────────────────────────────
+    if      (state_voo_ == 0) { handle_state0_wait_waypoint(); }
+    else if (state_voo_ == 1) { handle_state1_takeoff(); }
+    else if (state_voo_ == 2) { handle_state2_hover(); }
+    else if (state_voo_ == 3) { handle_state3_trajectory(); }
+    else if (state_voo_ == 4) { handle_state4_landing(); }
+    else if (state_voo_ == 5) { handle_state5_standby(); }
+  }
 
-      RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 10000,
-        "⏳ Aguardando novo comando de waypoint para decolar...");
-      // Não faz nada! Apenas aguarda novo waypoint em waypoints_callback()
+  // ==========================================
+  // ESTADO 0: AGUARDANDO NOVO WAYPOINT
+  // ==========================================
+  /// @brief State 0 — idle, waiting for a waypoint command to arrive.
+  void handle_state0_wait_waypoint() {
+    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 10000,
+      "⏳ Aguardando novo comando de waypoint para decolar...");
+    // Não faz nada! Apenas aguarda novo waypoint em waypoints_callback()
+  }
+
+  // ==========================================
+  // ESTADO 1: DECOLAGEM
+  // ==========================================
+  /**
+   * @brief State 1 — takeoff sequence (3-layer state machine).
+   *
+   * Layer 1: request OFFBOARD + ARM.
+   * Layer 2: wait for FCU confirmation (with timeout/retry).
+   * Layer 3: publish climb setpoint until hover altitude is reached.
+   */
+  void handle_state1_takeoff() {
+    // ──────────────────────────────────────────
+    // CAMADA 1: SOLICITAR OFFBOARD+ARM
+    // ──────────────────────────────────────────
+    if (!offboard_activated_) {
+      RCLCPP_INFO(this->get_logger(), "📡 Solicitando OFFBOARD+ARM...");
+      request_offboard();
+      request_arm();
+      offboard_activated_ = true;
+      activation_time_ = this->now();
+      return;  // Aguarda próximo ciclo
     }
 
-    // ==========================================
-    // ESTADO 1: DECOLAGEM
-    // ==========================================
-    else if (state_voo_ == 1) {
+    // ──────────────────────────────────────────
+    // CAMADA 2: VERIFICAR CONFIRMAÇÃO DO FCU
+    // ──────────────────────────────────────────
+    if (!activation_confirmed_) {
+      if (current_state_.armed && current_state_.mode == "OFFBOARD") {
+        RCLCPP_INFO(this->get_logger(),
+          "✅ OFFBOARD+ARM CONFIRMADOS! Iniciando decolagem...");
+        activation_confirmed_ = true;
+        takeoff_counter_ = 0;
 
-      // ──────────────────────────────────────────
-      // CAMADA 1: SOLICITAR OFFBOARD+ARM
-      // ──────────────────────────────────────────
-      if (!offboard_activated_) {
-        RCLCPP_INFO(this->get_logger(), "📡 Solicitando OFFBOARD+ARM...");
-        request_offboard();
-        request_arm();
-        offboard_activated_ = true;
-        activation_time_ = this->now();
-        return;  // Aguarda próximo ciclo
-      }
-
-      // ──────────────────────────────────────────
-      // CAMADA 2: VERIFICAR CONFIRMAÇÃO DO FCU
-      // ──────────────────────────────────────────
-      if (!activation_confirmed_) {
-        if (current_state_.armed && current_state_.mode == "OFFBOARD") {
+        if (!takeoff_cmd_id_) {
+          takeoff_cmd_id_ = cmd_queue_.enqueue(
+            CommandType::TAKEOFF,
+            {{"x", std::to_string(last_waypoint_goal_.pose.position.x)},
+             {"y", std::to_string(last_waypoint_goal_.pose.position.y)},
+             {"z", std::to_string(config_.hover_altitude)}});
           RCLCPP_INFO(this->get_logger(),
-            "✅ OFFBOARD+ARM CONFIRMADOS! Iniciando decolagem...");
-          activation_confirmed_ = true;
-          takeoff_counter_ = 0;
-          
-          if (!takeoff_cmd_id_) {
-            takeoff_cmd_id_ = cmd_queue_.enqueue(
-                CommandType::TAKEOFF,
-                {{"x", std::to_string(last_waypoint_goal_.pose.position.x)},
-                {"y", std::to_string(last_waypoint_goal_.pose.position.y)},
-                {"z", std::to_string(config_.hover_altitude)}});
-            RCLCPP_INFO(this->get_logger(),
-                "📋 [ID=%lu] Comando TAKEOFF enfileirado após ARM+OFFBOARD confirmado!", *takeoff_cmd_id_);
-          }
-
-        } else if ((this->now() - activation_time_).seconds() > config_.activation_timeout) {
-          // Timeout: tentar novamente
-          RCLCPP_WARN(this->get_logger(),
-            "⚠️ Timeout ativação OFFBOARD+ARM (%.0f s)! Tentando novamente...",
-            config_.activation_timeout);
-          RCLCPP_WARN(this->get_logger(),
-            "   Estado: armed=%d | mode=%s",
-            current_state_.armed,
-            current_state_.mode.c_str());
-          offboard_activated_ = false;
-          activation_confirmed_ = false;
-          takeoff_counter_ = 0;
-          return;
-        } else {
-          // Ainda aguardando confirmação
-          RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
-            "⏳ Aguardando OFFBOARD+ARM... | armed=%d | mode=%s",
-            current_state_.armed,
-            current_state_.mode.c_str());
-          takeoff_counter_++;
-          return;  // NÃO publica até confirmar
+            "📋 [ID=%lu] Comando TAKEOFF enfileirado após ARM+OFFBOARD confirmado!", *takeoff_cmd_id_);
         }
-      }
 
-      // ──────────────────────────────────────────
-      // CAMADA 3: PUBLICAR SETPOINT DE DECOLAGEM
-      // ──────────────────────────────────────────
-      // Publica setpoint de decolagem usando Z do último waypoint recebido
-      double target_altitude = last_waypoint_goal_.pose.position.z;
-      if (using_4d_goal_) {
-        publishPositionTargetWithYaw(
-          last_waypoint_goal_.pose.position.x,
-          last_waypoint_goal_.pose.position.y,
-          target_altitude,
-          goal_yaw_rad_);
-      } else {
-        publishPositionTarget(
-          last_waypoint_goal_.pose.position.x,
-          last_waypoint_goal_.pose.position.y,
-          target_altitude,
-          0.0, MASK_POS_ONLY);
-      }
-
-      takeoff_counter_++;
-
-      if (takeoff_counter_ == 1) {
-        RCLCPP_INFO(this->get_logger(), "⬆️ Decolando para %.1f metros...", target_altitude);
-        RCLCPP_INFO(this->get_logger(), "   Posição: X=%.2f, Y=%.2f, Z=%.1f",
-          last_waypoint_goal_.pose.position.x,
-          last_waypoint_goal_.pose.position.y,
-          target_altitude);
-      }
-
-      // Log de progresso a cada 100 ciclos (1 segundo @ 100 Hz)
-      if (takeoff_counter_ % 100 == 0) {
-        RCLCPP_INFO(this->get_logger(),
-          "📈 Decolando... Z_alvo=%.1fm | Z_real=%.2fm | Tempo=%.1fs",
-          target_altitude,
-          current_z_real_,
-          (double)takeoff_counter_ / 100.0);
-      }
-
-      // Verifica se drone chegou na altitude alvo usando odometria real.
-      // Margem de hover_altitude_margin abaixo do alvo para segurança.
-      double arrival_threshold = target_altitude - config_.hover_altitude_margin;
-      if (current_z_real_ >= arrival_threshold) {
-        RCLCPP_INFO(this->get_logger(),
-          "✅ Decolagem concluída! Altitude = %.2fm\n", current_z_real_);
-        // Confirma comando TAKEOFF
-        if (takeoff_cmd_id_) {
-          cmd_queue_.confirm(*takeoff_cmd_id_, true);
-          RCLCPP_INFO(this->get_logger(),
-            "✅ [ID=%lu] TAKEOFF confirmado! Altitude=%.2fm", *takeoff_cmd_id_, current_z_real_);
-          takeoff_cmd_id_.reset();
-        }
-        // Inicia comando HOVER
-        hover_cmd_id_ = cmd_queue_.enqueue(
-          CommandType::HOVER,
-          {{"x", std::to_string(last_waypoint_goal_.pose.position.x)},
-           {"y", std::to_string(last_waypoint_goal_.pose.position.y)},
-           {"z", std::to_string(target_altitude)}});
-        RCLCPP_INFO(this->get_logger(),
-          "📋 [ID=%lu] Comando HOVER enfileirado", *hover_cmd_id_);
-        state_voo_ = 2;
+      } else if ((this->now() - activation_time_).seconds() > config_.activation_timeout) {
+        // Timeout: tentar novamente
+        RCLCPP_WARN(this->get_logger(),
+          "⚠️ Timeout ativação OFFBOARD+ARM (%.0f s)! Tentando novamente...",
+          config_.activation_timeout);
+        RCLCPP_WARN(this->get_logger(),
+          "   Estado: armed=%d | mode=%s",
+          current_state_.armed,
+          current_state_.mode.c_str());
+        offboard_activated_ = false;
+        activation_confirmed_ = false;
         takeoff_counter_ = 0;
         return;
-      }
-    }
-
-    // ==========================================
-    // ESTADO 2: HOVER/AGUARDANDO TRAJETÓRIA
-    // ==========================================
-    else if (state_voo_ == 2) {
-
-      // Publica setpoint em hover usando Z do último waypoint recebido
-      if (using_4d_goal_) {
-        publishPositionTargetWithYaw(
-          last_waypoint_goal_.pose.position.x,
-          last_waypoint_goal_.pose.position.y,
-          last_waypoint_goal_.pose.position.z,
-          goal_yaw_rad_);
       } else {
-        publishPositionTarget(
-          last_waypoint_goal_.pose.position.x,
-          last_waypoint_goal_.pose.position.y,
-          last_waypoint_goal_.pose.position.z,
-          0.0, MASK_POS_ONLY);
-      }
-
-      if (cycle_count_ % 500 == 0) {
-        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 10000,
-          "🛸 Em HOVER (%.1fm) | Posição: X=%.2f, Y=%.2f | Aguardando waypoints... Controlador: %s",
-          last_waypoint_goal_.pose.position.z,
-          last_waypoint_goal_.pose.position.x,
-          last_waypoint_goal_.pose.position.y,
-          controlador_ativo_ ? "ATIVO" : "INATIVO");
-      }
-
-      // Quando recebe waypoints válidos, vai para estado 3
-      if (controlador_ativo_) {
-        state_voo_ = 3;
-        RCLCPP_INFO(this->get_logger(), "✈️ Iniciando execução de trajetória...\n");
-      }
-
-      // SE DETECTAR POUSO NESTE ESTADO
-      if (pouso_em_andamento_) {
-        RCLCPP_WARN(this->get_logger(), "🛬 POUSO DETECTADO NO HOVER - DESLIGANDO!");
-        state_voo_ = 4;
-        return;
+        // Ainda aguardando confirmação
+        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+          "⏳ Aguardando OFFBOARD+ARM... | armed=%d | mode=%s",
+          current_state_.armed,
+          current_state_.mode.c_str());
+        takeoff_counter_++;
+        return;  // NÃO publica até confirmar
       }
     }
 
-    // ==========================================
-    // ESTADO 3: EXECUTANDO TRAJETÓRIA
-    // ==========================================
-    else if (state_voo_ == 3) {
-
-      // NOVO! Detectar pouso durante trajetória (Z real < land_z_threshold)
-      if (current_z_real_ < config_.land_z_threshold) {
-        RCLCPP_WARN(this->get_logger(), "\n🛬🛬🛬 POUSO DETECTADO DURANTE TRAJETÓRIA! Z = %.2f m", current_z_real_);
-        // Marca TRAJECTORY como falha (interrompida por pouso)
-        if (trajectory_cmd_id_) {
-          cmd_queue_.confirm(*trajectory_cmd_id_, false);
-          RCLCPP_WARN(this->get_logger(),
-            "⚠️ [ID=%lu] TRAJECTORY interrompida por pouso", *trajectory_cmd_id_);
-          trajectory_cmd_id_.reset();
-        }
-        // Enfileira LAND se não enfileirado
-        if (!land_cmd_id_) {
-          land_cmd_id_ = cmd_queue_.enqueue(
-            CommandType::LAND, {{"z", std::to_string(current_z_real_)}});
-          RCLCPP_WARN(this->get_logger(),
-            "📋 [ID=%lu] Comando LAND enfileirado (pouso durante trajetória)", *land_cmd_id_);
-        }
-        pouso_em_andamento_ = true;
-        controlador_ativo_ = false;
-        state_voo_ = 4;
-        return;
-      }
-
-      // Detectar pouso automaticamente
-      if (pouso_em_andamento_ && !controlador_ativo_) {
-        RCLCPP_WARN(this->get_logger(), "🛬 POUSO DETECTADO EM TRAJETÓRIA - PARANDO IMEDIATAMENTE!");
-        state_voo_ = 4;
-        return;
-      }
-
-      // INICIALIZAR trajetória na primeira execução
-      if (!trajectory_started_) {
-        if (trajectory_waypoints_.empty()) {
-          RCLCPP_WARN(this->get_logger(), "⚠️ Nenhum waypoint armazenado, voltando para ESTADO 2");
-          state_voo_ = 2;
-          return;
-        }
-
-        trajectory_start_time_ = this->now();
-        trajectory_started_ = true;
-        current_waypoint_idx_ = 0;
-
-        RCLCPP_INFO(this->get_logger(), "✈️ Trajetória iniciada! %zu waypoints | %.1f segundos cada",
-          trajectory_waypoints_.size(), waypoint_duration_);
-      }
-
-      // CALCULAR qual waypoint publicar baseado no tempo transcorrido
-      double elapsed_time = (this->now() - trajectory_start_time_).seconds();
-      int computed_idx = static_cast<int>(elapsed_time / waypoint_duration_);
-
-      // Limitar ao índice máximo (não ultrapassar último waypoint)
-      // Boundary-check: trajectory_waypoints_ is guaranteed non-empty here
-      // (checked above via trajectory_waypoints_.empty()).
-      current_waypoint_idx_ = std::min(
-        computed_idx,
-        static_cast<int>(trajectory_waypoints_.size()) - 1);
-
-      // Explicit bounds guard to prevent out-of-range access.
-      if (current_waypoint_idx_ < 0 ||
-          static_cast<size_t>(current_waypoint_idx_) >= trajectory_waypoints_.size()) {
-        RCLCPP_ERROR(this->get_logger(),
-          "❌ Índice de waypoint inválido: %d (tamanho=%zu)",
-          current_waypoint_idx_, trajectory_waypoints_.size());
-        state_voo_ = 2;
-        return;
-      }
-
-      // PUBLICAR waypoint ATUAL
-      // ... dentro do else if (state_voo_ == 3) do control_loop:
-      const auto & current_waypoint = trajectory_waypoints_[current_waypoint_idx_];
-      size_t last_idx = trajectory_waypoints_.size() - 1;
-      bool at_last_wp = (static_cast<size_t>(current_waypoint_idx_) == last_idx);
-
-      if (trajectory_4d_mode_ && at_last_wp && static_cast<size_t>(current_waypoint_idx_) < trajectory_yaws_.size()) {
-          // 4D: já pega yaw do waypoint explicitamente
-          publishPositionTargetWithYaw(current_waypoint.position.x, current_waypoint.position.y, current_waypoint.position.z, trajectory_yaws_[current_waypoint_idx_]);
-      } else {
-        double yaw_follow = 0.0;
-        if (at_last_wp) {
-            if (!at_last_waypoint_yaw_fixed_) {
-                // Calcula uma última vez ao chegar
-                double dx = current_waypoint.position.x - current_x_ned_;
-                double dy = current_waypoint.position.y - current_y_ned_;
-                yaw_follow = std::atan2(dy, dx);
-                final_waypoint_yaw_ = yaw_follow;
-                at_last_waypoint_yaw_fixed_ = true;
-            } else {
-                // Mantém o último valor calculado
-                yaw_follow = final_waypoint_yaw_;
-            }
-          } else {
-              double dx = current_waypoint.position.x - current_x_ned_;
-              double dy = current_waypoint.position.y - current_y_ned_;
-              yaw_follow = std::atan2(dy, dx);
-              final_waypoint_yaw_ = yaw_follow; // Atualiza sempre enquanto "a caminho"
-              at_last_waypoint_yaw_fixed_ = false;
-            }
-            publishPositionTargetWithYaw(current_waypoint.position.x, current_waypoint.position.y, current_waypoint.position.z, yaw_follow);
-        }
-
-      // LOG: Mostrar progresso da trajetória
-      if (cycle_count_ % 500 == 0) {
-        double total_time = waypoint_duration_ * (double)trajectory_waypoints_.size();
-        double progress_pct = (elapsed_time / total_time) * 100.0;
-
-        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 10000,
-          "📡 Trajetória em execução | WP[%d/%zu]: X=%.2fm, Y=%.2fm, Z=%.2fm (Z_real=%.2f) | %.1f%% concluído",
-          current_waypoint_idx_,
-          trajectory_waypoints_.size() - 1,
-          current_waypoint.position.x,
-          current_waypoint.position.y,
-          current_waypoint.position.z,
-          current_z_real_,
-          progress_pct);
-      }
-
-      // Confirma TRAJECTORY quando todos os waypoints foram visitados
-      {
-        double total_time = waypoint_duration_ * (double)trajectory_waypoints_.size();
-        if (elapsed_time >= total_time && trajectory_cmd_id_) {
-          cmd_queue_.confirm(*trajectory_cmd_id_, true);
-          RCLCPP_INFO(this->get_logger(),
-            "✅ [ID=%lu] TRAJECTORY confirmada - todos os waypoints visitados", *trajectory_cmd_id_);
-          trajectory_cmd_id_.reset();
-          
-          
-          std_msgs::msg::Bool done_msg;
-          done_msg.data = true;
-          trajectory_finished_pub_->publish(done_msg);
-          std_msgs::msg::Float32 progress_msg;
-          progress_msg.data = 100.0; // CORRETO
-          progress_publisher_->publish(progress_msg);
-          RCLCPP_INFO(this->get_logger(), "📢 Trajetória terminada! Publicado /trajectory_finished = true");
-        }
-      }
+    // ──────────────────────────────────────────
+    // CAMADA 3: PUBLICAR SETPOINT DE DECOLAGEM
+    // ──────────────────────────────────────────
+    // Publica setpoint de decolagem usando Z do último waypoint recebido
+    double target_altitude = last_waypoint_goal_.pose.position.z;
+    if (using_4d_goal_) {
+      publishPositionTargetWithYaw(
+        last_waypoint_goal_.pose.position.x,
+        last_waypoint_goal_.pose.position.y,
+        target_altitude,
+        goal_yaw_rad_);
+    } else {
+      publishPositionTarget(
+        last_waypoint_goal_.pose.position.x,
+        last_waypoint_goal_.pose.position.y,
+        target_altitude,
+        0.0, MASK_POS_ONLY);
     }
 
-    // ==========================================
-    // ESTADO 4: POUSO/PAUSADO - NÃO PUBLICA
-    // ==========================================
-    else if (state_voo_ == 4) {
-      if (cycle_count_ % 500 == 0) {
-        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 10000,
-          "🛑 CONTROLADOR PAUSADO | drone_soft_land fazendo pouso...");
+    takeoff_counter_++;
+
+    if (takeoff_counter_ == 1) {
+      RCLCPP_INFO(this->get_logger(), "⬆️ Decolando para %.1f metros...", target_altitude);
+      RCLCPP_INFO(this->get_logger(), "   Posição: X=%.2f, Y=%.2f, Z=%.1f",
+        last_waypoint_goal_.pose.position.x,
+        last_waypoint_goal_.pose.position.y,
+        target_altitude);
+    }
+
+    // Log de progresso a cada 100 ciclos (1 segundo @ 100 Hz)
+    if (takeoff_counter_ % 100 == 0) {
+      RCLCPP_INFO(this->get_logger(),
+        "📈 Decolando... Z_alvo=%.1fm | Z_real=%.2fm | Tempo=%.1fs",
+        target_altitude,
+        current_z_real_,
+        (double)takeoff_counter_ / 100.0);
+    }
+
+    // Verifica se drone chegou na altitude alvo usando odometria real.
+    // Margem de hover_altitude_margin abaixo do alvo para segurança.
+    double arrival_threshold = target_altitude - config_.hover_altitude_margin;
+    if (current_z_real_ >= arrival_threshold) {
+      RCLCPP_INFO(this->get_logger(),
+        "✅ Decolagem concluída! Altitude = %.2fm\n", current_z_real_);
+      // Confirma comando TAKEOFF
+      if (takeoff_cmd_id_) {
+        cmd_queue_.confirm(*takeoff_cmd_id_, true);
+        RCLCPP_INFO(this->get_logger(),
+          "✅ [ID=%lu] TAKEOFF confirmado! Altitude=%.2fm", *takeoff_cmd_id_, current_z_real_);
+        takeoff_cmd_id_.reset();
       }
+      // Inicia comando HOVER
+      hover_cmd_id_ = cmd_queue_.enqueue(
+        CommandType::HOVER,
+        {{"x", std::to_string(last_waypoint_goal_.pose.position.x)},
+         {"y", std::to_string(last_waypoint_goal_.pose.position.y)},
+         {"z", std::to_string(target_altitude)}});
+      RCLCPP_INFO(this->get_logger(),
+        "📋 [ID=%lu] Comando HOVER enfileirado", *hover_cmd_id_);
+      state_voo_ = 2;
+      takeoff_counter_ = 0;
+    }
+  }
 
-      // TIMEOUT: Uma vez que pouso foi detectado, aguarda landing_timeout
-      // segundos INDEPENDENTE de last_z_
-      if (pouso_em_andamento_) {
-        if (!pouso_start_time_set_) {
-          pouso_start_time_ = this->now();
-          pouso_start_time_set_ = true;
-          RCLCPP_INFO(this->get_logger(),
-            "⏱️ Iniciando contagem de pouso (%.0f s para confirmar)...", config_.landing_timeout);
-        }
+  // ==========================================
+  // ESTADO 2: HOVER / AGUARDANDO TRAJETÓRIA
+  // ==========================================
+  /**
+   * @brief State 2 — hold hover position and wait for trajectory waypoints.
+   *
+   * Continuously publishes the hover setpoint.  Transitions to State 3 when
+   * controlador_ativo_ is set by an incoming waypoint callback, or to State 4
+   * if landing is detected.
+   */
+  void handle_state2_hover() {
+    // Publica setpoint em hover usando Z do último waypoint recebido
+    if (using_4d_goal_) {
+      publishPositionTargetWithYaw(
+        last_waypoint_goal_.pose.position.x,
+        last_waypoint_goal_.pose.position.y,
+        last_waypoint_goal_.pose.position.z,
+        goal_yaw_rad_);
+    } else {
+      publishPositionTarget(
+        last_waypoint_goal_.pose.position.x,
+        last_waypoint_goal_.pose.position.y,
+        last_waypoint_goal_.pose.position.z,
+        0.0, MASK_POS_ONLY);
+    }
 
-        // Se passou landing_timeout segundos desde que pouso foi detectado
-        if ((this->now() - pouso_start_time_).seconds() > config_.landing_timeout) {
+    if (cycle_count_ % 500 == 0) {
+      RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 10000,
+        "🛸 Em HOVER (%.1fm) | Posição: X=%.2f, Y=%.2f | Aguardando waypoints... Controlador: %s",
+        last_waypoint_goal_.pose.position.z,
+        last_waypoint_goal_.pose.position.x,
+        last_waypoint_goal_.pose.position.y,
+        controlador_ativo_ ? "ATIVO" : "INATIVO");
+    }
 
-          if (landing_mode_ == 0) {
-            // ── MODO A: Standby no chão ──────────────────────────────────
-            // Confirma comando LAND sem desarmar
-            if (land_cmd_id_) {
-              cmd_queue_.confirm(*land_cmd_id_, true);
-              RCLCPP_WARN(this->get_logger(),
-                "✅ [ID=%lu] LAND confirmado (Modo A - sem DISARM)", *land_cmd_id_);
-              land_cmd_id_.reset();
-            }
-            // Salva log persistente do histórico de comandos
-            cmd_queue_.save_log("/tmp/drone_commands.log");
-            RCLCPP_INFO(this->get_logger(),
-              "💾 Histórico de comandos salvo em /tmp/drone_commands.log");
+    // Quando recebe waypoints válidos, vai para estado 3
+    if (controlador_ativo_) {
+      state_voo_ = 3;
+      RCLCPP_INFO(this->get_logger(), "✈️ Iniciando execução de trajetória...\n");
+    }
 
-            RCLCPP_WARN(this->get_logger(),
-              "\n✅ POUSO CONCLUÍDO (MODO A): mantendo OFFBOARD+ARM e segurando no chão.\n"
-              "   Drone permanece armado em estado 5 (standby no chão).\n");
+    // SE DETECTAR POUSO NESTE ESTADO
+    if (pouso_em_andamento_) {
+      RCLCPP_WARN(this->get_logger(), "🛬 POUSO DETECTADO NO HOVER - DESLIGANDO!");
+      state_voo_ = 4;
+    }
+  }
 
-            // ground_hold_x_/y_/z_ já foram definidos no callback de detecção de pouso;
-            // garantir z mínimo seguro como fallback
-            ground_hold_z_ = std::max(0.01, config_.land_z_threshold);
-
-            // Limpa flags de trajetória/execução mas MANTÉM offboard_activated_ e activation_confirmed_
-            pouso_em_andamento_ = false;
-            controlador_ativo_ = false;
-            trajectory_started_ = false;
-            pouso_start_time_set_ = false;
-            takeoff_counter_ = 0;
-            trajectory_waypoints_.clear();
-            current_waypoint_idx_ = 0;
-            takeoff_cmd_id_.reset();
-            hover_cmd_id_.reset();
-            trajectory_cmd_id_.reset();
-
-            // Transiciona para estado 5: standby no chão
-            state_voo_ = 5;
-
-            RCLCPP_WARN(this->get_logger(), "🔍 DEBUG MODO A (estado 5):");
-            RCLCPP_WARN(this->get_logger(), "   offboard_activated_=%d (mantido)", offboard_activated_);
-            RCLCPP_WARN(this->get_logger(), "   activation_confirmed_=%d (mantido)", activation_confirmed_);
-            RCLCPP_WARN(this->get_logger(), "   ground_hold=(%.2f, %.2f, %.2f)",
-              ground_hold_x_, ground_hold_y_, ground_hold_z_);
-
-          } else {
-            // ── MODO B: Desligar/Desarmar (comportamento atual) ──────────
-            RCLCPP_WARN(this->get_logger(), "🔌 Solicitando DISARM...");
-
-            // DISARM
-            request_disarm();
-
-            // Confirma comando LAND
-            if (land_cmd_id_) {
-              cmd_queue_.confirm(*land_cmd_id_, true);
-              RCLCPP_WARN(this->get_logger(),
-                "✅ [ID=%lu] LAND confirmado - pouso concluído", *land_cmd_id_);
-              land_cmd_id_.reset();
-            }
-            // Salva log persistente do histórico de comandos
-            cmd_queue_.save_log("/tmp/drone_commands.log");
-            RCLCPP_INFO(this->get_logger(),
-              "💾 Histórico de comandos salvo em /tmp/drone_commands.log");
-
-            RCLCPP_WARN(this->get_logger(),
-              "\n✅ POUSO CONCLUÍDO! Aguardando novo comando de waypoint para decolar novamente...\n");
-
-            // Resetar TODAS as flags para estado limpo
-            // CRUCIAL: offboard_activated_ DEVE ser false para próxima decolagem!
-            state_voo_ = 0;
-            pouso_em_andamento_ = false;
-            controlador_ativo_ = false;
-            trajectory_started_ = false;
-            pouso_start_time_set_ = false;
-            offboard_activated_ = false;
-            activation_confirmed_ = false;
-            takeoff_counter_ = 0;
-            trajectory_waypoints_.clear();
-            current_waypoint_idx_ = 0;
-            takeoff_cmd_id_.reset();
-            hover_cmd_id_.reset();
-            trajectory_cmd_id_.reset();
-            land_cmd_id_.reset();
-
-            // Log de verificação
-            RCLCPP_WARN(this->get_logger(), "🔍 DEBUG RESET EM ESTADO 4:");
-            RCLCPP_WARN(this->get_logger(), "   offboard_activated_=%d (deve ser 0)", offboard_activated_);
-            RCLCPP_WARN(this->get_logger(), "   state_voo_=%d (deve ser 0)", state_voo_);
-          }
-
-          return;
-        }
+  // ==========================================
+  // ESTADO 3: EXECUTANDO TRAJETÓRIA
+  // ==========================================
+  /**
+   * @brief State 3 — time-indexed trajectory execution.
+   *
+   * Plays back the stored waypoint list at waypoint_duration_ seconds per
+   * point.  Handles yaw-following (3D) and explicit yaw targets (4D).
+   * Detects unexpected landing and confirms TRAJECTORY when all waypoints
+   * are visited.
+   */
+  void handle_state3_trajectory() {
+    // NOVO! Detectar pouso durante trajetória (Z real < land_z_threshold)
+    if (current_z_real_ < config_.land_z_threshold) {
+      RCLCPP_WARN(this->get_logger(), "\n🛬🛬🛬 POUSO DETECTADO DURANTE TRAJETÓRIA! Z = %.2f m", current_z_real_);
+      // Marca TRAJECTORY como falha (interrompida por pouso)
+      if (trajectory_cmd_id_) {
+        cmd_queue_.confirm(*trajectory_cmd_id_, false);
+        RCLCPP_WARN(this->get_logger(),
+          "⚠️ [ID=%lu] TRAJECTORY interrompida por pouso", *trajectory_cmd_id_);
+        trajectory_cmd_id_.reset();
       }
-
-      // Modo A: publica setpoint de ancoragem para manter OFFBOARD ativo durante pouso
-      if (landing_mode_ == 0) {
-        publishPositionTarget(ground_hold_x_, ground_hold_y_, ground_hold_z_, 0.0, MASK_POS_ONLY);
-        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 3000,
-          "🛬 [MODO A] Publicando setpoint de ancoragem durante pouso: X=%.2f, Y=%.2f, Z=%.3f",
-          ground_hold_x_, ground_hold_y_, ground_hold_z_);
+      // Enfileira LAND se não enfileirado
+      if (!land_cmd_id_) {
+        land_cmd_id_ = cmd_queue_.enqueue(
+          CommandType::LAND, {{"z", std::to_string(current_z_real_)}});
+        RCLCPP_WARN(this->get_logger(),
+          "📋 [ID=%lu] Comando LAND enfileirado (pouso durante trajetória)", *land_cmd_id_);
       }
-      // Modo B: não publica nada durante pouso (comportamento original)
+      pouso_em_andamento_ = true;
+      controlador_ativo_ = false;
+      state_voo_ = 4;
       return;
     }
 
-    // ==========================================
-    // ESTADO 5: STANDBY NO CHÃO (MODO A)
-    // Mantém OFFBOARD+ARM, publica setpoint de posição com Z baixo
-    // para o PX4 segurar o drone no solo sem desarmar os motores.
-    // Sai deste estado ao receber novo waypoint de voo (Z >= land_z_threshold).
-    // ==========================================
-    else if (state_voo_ == 5) {
-      // Verifica se ainda está armado e em OFFBOARD
-      if (!current_state_.armed || current_state_.mode != "OFFBOARD") {
-        // Taxa de recuperação: tenta re-solicitar OFFBOARD+ARM a cada activation_timeout segundos
-        bool should_request = (this->now() - state5_recovery_time_).seconds() > config_.activation_timeout;
-        if (should_request) {
-          RCLCPP_WARN(this->get_logger(),
-            "⚠️ Estado 5: não está armado/OFFBOARD (armed=%d mode=%s). Tentando reativar...",
-            current_state_.armed, current_state_.mode.c_str());
-          request_offboard();
-          request_arm();
-          state5_recovery_time_ = this->now();
-        }
+    // Detectar pouso automaticamente
+    if (pouso_em_andamento_ && !controlador_ativo_) {
+      RCLCPP_WARN(this->get_logger(), "🛬 POUSO DETECTADO EM TRAJETÓRIA - PARANDO IMEDIATAMENTE!");
+      state_voo_ = 4;
+      return;
+    }
+
+    // INICIALIZAR trajetória na primeira execução
+    if (!trajectory_started_) {
+      if (trajectory_waypoints_.empty()) {
+        RCLCPP_WARN(this->get_logger(), "⚠️ Nenhum waypoint armazenado, voltando para ESTADO 2");
+        state_voo_ = 2;
         return;
       }
 
-      // Publica setpoint de posição baixa para segurar o drone no solo
-      publishPositionTarget(ground_hold_x_, ground_hold_y_, ground_hold_z_, 0.0, MASK_POS_ONLY);
+      trajectory_start_time_ = this->now();
+      trajectory_started_ = true;
+      current_waypoint_idx_ = 0;
 
-      if (cycle_count_ % 500 == 0) {
-        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 10000,
-          "🟢 STANDBY NO CHÃO | Setpoint: X=%.2f, Y=%.2f, Z=%.3f | Aguardando novo waypoint...",
-          ground_hold_x_, ground_hold_y_, ground_hold_z_);
+      RCLCPP_INFO(this->get_logger(), "✈️ Trajetória iniciada! %zu waypoints | %.1f segundos cada",
+        trajectory_waypoints_.size(), waypoint_duration_);
+    }
+
+    // CALCULAR qual waypoint publicar baseado no tempo transcorrido
+    double elapsed_time = (this->now() - trajectory_start_time_).seconds();
+    int computed_idx = static_cast<int>(elapsed_time / waypoint_duration_);
+
+    // Limitar ao índice máximo (não ultrapassar último waypoint).
+    // trajectory_waypoints_ is guaranteed non-empty at this point
+    // (verified by the trajectory_waypoints_.empty() guard above).
+    current_waypoint_idx_ = std::min(
+      computed_idx,
+      static_cast<int>(trajectory_waypoints_.size()) - 1);
+
+    // Defensive bounds guard — protects against potential logic errors or
+    // race conditions that could produce an out-of-range index.
+    if (current_waypoint_idx_ < 0 ||
+        static_cast<size_t>(current_waypoint_idx_) >= trajectory_waypoints_.size()) {
+      RCLCPP_ERROR(this->get_logger(),
+        "❌ Índice de waypoint inválido: %d (tamanho=%zu)",
+        current_waypoint_idx_, trajectory_waypoints_.size());
+      state_voo_ = 2;
+      return;
+    }
+
+    // PUBLICAR waypoint ATUAL
+    const auto & current_waypoint = trajectory_waypoints_[current_waypoint_idx_];
+    size_t last_idx = trajectory_waypoints_.size() - 1;
+    bool at_last_wp = (static_cast<size_t>(current_waypoint_idx_) == last_idx);
+
+    if (trajectory_4d_mode_ && at_last_wp &&
+        static_cast<size_t>(current_waypoint_idx_) < trajectory_yaws_.size()) {
+      // 4D: já pega yaw do waypoint explicitamente
+      publishPositionTargetWithYaw(
+        current_waypoint.position.x, current_waypoint.position.y,
+        current_waypoint.position.z, trajectory_yaws_[current_waypoint_idx_]);
+    } else {
+      double yaw_follow = 0.0;
+      if (at_last_wp) {
+        if (!at_last_waypoint_yaw_fixed_) {
+          // Calcula uma última vez ao chegar
+          double dx = current_waypoint.position.x - current_x_ned_;
+          double dy = current_waypoint.position.y - current_y_ned_;
+          yaw_follow = std::atan2(dy, dx);
+          final_waypoint_yaw_ = yaw_follow;
+          at_last_waypoint_yaw_fixed_ = true;
+        } else {
+          // Mantém o último valor calculado
+          yaw_follow = final_waypoint_yaw_;
+        }
+      } else {
+        double dx = current_waypoint.position.x - current_x_ned_;
+        double dy = current_waypoint.position.y - current_y_ned_;
+        yaw_follow = std::atan2(dy, dx);
+        final_waypoint_yaw_ = yaw_follow;  // Atualiza sempre enquanto "a caminho"
+        at_last_waypoint_yaw_fixed_ = false;
       }
+      publishPositionTargetWithYaw(
+        current_waypoint.position.x, current_waypoint.position.y,
+        current_waypoint.position.z, yaw_follow);
+    }
+
+    // LOG: Mostrar progresso da trajetória
+    if (cycle_count_ % 500 == 0) {
+      double total_time = waypoint_duration_ * (double)trajectory_waypoints_.size();
+      double progress_pct = (elapsed_time / total_time) * 100.0;
+
+      RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 10000,
+        "📡 Trajetória em execução | WP[%d/%zu]: X=%.2fm, Y=%.2fm, Z=%.2fm (Z_real=%.2f) | %.1f%% concluído",
+        current_waypoint_idx_,
+        trajectory_waypoints_.size() - 1,
+        current_waypoint.position.x,
+        current_waypoint.position.y,
+        current_waypoint.position.z,
+        current_z_real_,
+        progress_pct);
+    }
+
+    // Confirma TRAJECTORY quando todos os waypoints foram visitados
+    double total_time = waypoint_duration_ * (double)trajectory_waypoints_.size();
+    if (elapsed_time >= total_time && trajectory_cmd_id_) {
+      cmd_queue_.confirm(*trajectory_cmd_id_, true);
+      RCLCPP_INFO(this->get_logger(),
+        "✅ [ID=%lu] TRAJECTORY confirmada - todos os waypoints visitados", *trajectory_cmd_id_);
+      trajectory_cmd_id_.reset();
+
+      std_msgs::msg::Bool done_msg;
+      done_msg.data = true;
+      trajectory_finished_pub_->publish(done_msg);
+      std_msgs::msg::Float32 progress_msg;
+      progress_msg.data = 100.0;
+      progress_publisher_->publish(progress_msg);
+      RCLCPP_INFO(this->get_logger(), "📢 Trajetória terminada! Publicado /trajectory_finished = true");
+    }
+  }
+
+  // ==========================================
+  // ESTADO 4: POUSO / PAUSADO
+  // ==========================================
+  /**
+   * @brief State 4 — landing / paused.
+   *
+   * Does NOT publish setpoints in Mode B (DISARM).  In Mode A publishes a
+   * low-Z anchor setpoint to keep OFFBOARD alive during the landing sequence.
+   * After landing_timeout seconds the FSM transitions to State 0 (Mode B) or
+   * State 5 (Mode A).
+   */
+  void handle_state4_landing() {
+    if (cycle_count_ % 500 == 0) {
+      RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 10000,
+        "🛑 CONTROLADOR PAUSADO | drone_soft_land fazendo pouso...");
+    }
+
+    // TIMEOUT: Uma vez que pouso foi detectado, aguarda landing_timeout
+    // segundos INDEPENDENTE de last_z_
+    if (pouso_em_andamento_) {
+      if (!pouso_start_time_set_) {
+        pouso_start_time_ = this->now();
+        pouso_start_time_set_ = true;
+        RCLCPP_INFO(this->get_logger(),
+          "⏱️ Iniciando contagem de pouso (%.0f s para confirmar)...", config_.landing_timeout);
+      }
+
+      // Se passou landing_timeout segundos desde que pouso foi detectado
+      if ((this->now() - pouso_start_time_).seconds() > config_.landing_timeout) {
+
+        if (landing_mode_ == 0) {
+          // ── MODO A: Standby no chão ──────────────────────────────────
+          // Confirma comando LAND sem desarmar
+          if (land_cmd_id_) {
+            cmd_queue_.confirm(*land_cmd_id_, true);
+            RCLCPP_WARN(this->get_logger(),
+              "✅ [ID=%lu] LAND confirmado (Modo A - sem DISARM)", *land_cmd_id_);
+            land_cmd_id_.reset();
+          }
+          // Salva log persistente do histórico de comandos
+          cmd_queue_.save_log("/tmp/drone_commands.log");
+          RCLCPP_INFO(this->get_logger(),
+            "💾 Histórico de comandos salvo em /tmp/drone_commands.log");
+
+          RCLCPP_WARN(this->get_logger(),
+            "\n✅ POUSO CONCLUÍDO (MODO A): mantendo OFFBOARD+ARM e segurando no chão.\n"
+            "   Drone permanece armado em estado 5 (standby no chão).\n");
+
+          // ground_hold_x_/y_/z_ já foram definidos no callback de detecção de pouso;
+          // garantir z mínimo seguro como fallback
+          ground_hold_z_ = std::max(0.01, config_.land_z_threshold);
+
+          // Limpa flags de trajetória/execução mas MANTÉM offboard_activated_ e activation_confirmed_
+          pouso_em_andamento_ = false;
+          controlador_ativo_ = false;
+          trajectory_started_ = false;
+          pouso_start_time_set_ = false;
+          takeoff_counter_ = 0;
+          trajectory_waypoints_.clear();
+          current_waypoint_idx_ = 0;
+          takeoff_cmd_id_.reset();
+          hover_cmd_id_.reset();
+          trajectory_cmd_id_.reset();
+
+          // Transiciona para estado 5: standby no chão
+          state_voo_ = 5;
+
+          RCLCPP_WARN(this->get_logger(), "🔍 DEBUG MODO A (estado 5):");
+          RCLCPP_WARN(this->get_logger(), "   offboard_activated_=%d (mantido)", offboard_activated_);
+          RCLCPP_WARN(this->get_logger(), "   activation_confirmed_=%d (mantido)", activation_confirmed_);
+          RCLCPP_WARN(this->get_logger(), "   ground_hold=(%.2f, %.2f, %.2f)",
+            ground_hold_x_, ground_hold_y_, ground_hold_z_);
+
+        } else {
+          // ── MODO B: Desligar/Desarmar (comportamento atual) ──────────
+          RCLCPP_WARN(this->get_logger(), "🔌 Solicitando DISARM...");
+
+          // DISARM
+          request_disarm();
+
+          // Confirma comando LAND
+          if (land_cmd_id_) {
+            cmd_queue_.confirm(*land_cmd_id_, true);
+            RCLCPP_WARN(this->get_logger(),
+              "✅ [ID=%lu] LAND confirmado - pouso concluído", *land_cmd_id_);
+            land_cmd_id_.reset();
+          }
+          // Salva log persistente do histórico de comandos
+          cmd_queue_.save_log("/tmp/drone_commands.log");
+          RCLCPP_INFO(this->get_logger(),
+            "💾 Histórico de comandos salvo em /tmp/drone_commands.log");
+
+          RCLCPP_WARN(this->get_logger(),
+            "\n✅ POUSO CONCLUÍDO! Aguardando novo comando de waypoint para decolar novamente...\n");
+
+          // Resetar TODAS as flags para estado limpo
+          // CRUCIAL: offboard_activated_ DEVE ser false para próxima decolagem!
+          state_voo_ = 0;
+          pouso_em_andamento_ = false;
+          controlador_ativo_ = false;
+          trajectory_started_ = false;
+          pouso_start_time_set_ = false;
+          offboard_activated_ = false;
+          activation_confirmed_ = false;
+          takeoff_counter_ = 0;
+          trajectory_waypoints_.clear();
+          current_waypoint_idx_ = 0;
+          takeoff_cmd_id_.reset();
+          hover_cmd_id_.reset();
+          trajectory_cmd_id_.reset();
+          land_cmd_id_.reset();
+
+          // Log de verificação
+          RCLCPP_WARN(this->get_logger(), "🔍 DEBUG RESET EM ESTADO 4:");
+          RCLCPP_WARN(this->get_logger(), "   offboard_activated_=%d (deve ser 0)", offboard_activated_);
+          RCLCPP_WARN(this->get_logger(), "   state_voo_=%d (deve ser 0)", state_voo_);
+        }
+
+        return;
+      }
+    }
+
+    // Modo A: publica setpoint de ancoragem para manter OFFBOARD ativo durante pouso
+    if (landing_mode_ == 0) {
+      publishPositionTarget(ground_hold_x_, ground_hold_y_, ground_hold_z_, 0.0, MASK_POS_ONLY);
+      RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 3000,
+        "🛬 [MODO A] Publicando setpoint de ancoragem durante pouso: X=%.2f, Y=%.2f, Z=%.3f",
+        ground_hold_x_, ground_hold_y_, ground_hold_z_);
+    }
+    // Modo B: não publica nada durante pouso (comportamento original)
+  }
+
+  // ==========================================
+  // ESTADO 5: STANDBY NO CHÃO (MODO A)
+  // ==========================================
+  /**
+   * @brief State 5 — armed standby on the ground (Mode A only).
+   *
+   * Keeps OFFBOARD+ARM active and publishes a low-Z position setpoint so the
+   * PX4 holds the drone on the ground without disarming.  Automatically tries
+   * to recover OFFBOARD+ARM if the FCU drops out of either.  Exits to State 1
+   * when a new flight waypoint is received (handled in the callbacks).
+   */
+  void handle_state5_standby() {
+    // Verifica se ainda está armado e em OFFBOARD
+    if (!current_state_.armed || current_state_.mode != "OFFBOARD") {
+      // Taxa de recuperação: tenta re-solicitar OFFBOARD+ARM a cada activation_timeout segundos
+      bool should_request =
+        (this->now() - state5_recovery_time_).seconds() > config_.activation_timeout;
+      if (should_request) {
+        RCLCPP_WARN(this->get_logger(),
+          "⚠️ Estado 5: não está armado/OFFBOARD (armed=%d mode=%s). Tentando reativar...",
+          current_state_.armed, current_state_.mode.c_str());
+        request_offboard();
+        request_arm();
+        state5_recovery_time_ = this->now();
+      }
+      return;
+    }
+
+    // Publica setpoint de posição baixa para segurar o drone no solo
+    publishPositionTarget(ground_hold_x_, ground_hold_y_, ground_hold_z_, 0.0, MASK_POS_ONLY);
+
+    if (cycle_count_ % 500 == 0) {
+      RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 10000,
+        "🟢 STANDBY NO CHÃO | Setpoint: X=%.2f, Y=%.2f, Z=%.3f | Aguardando novo waypoint...",
+        ground_hold_x_, ground_hold_y_, ground_hold_z_);
     }
   }
 
