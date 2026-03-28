@@ -1409,13 +1409,42 @@ void DroneControllerCompleto::handle_state3_trajectory()
 // FSM STATE 4 — POUSO / PAUSADO
 // ============================================================
 
+void DroneControllerCompleto::reset_after_landing()
+{
+  RCLCPP_WARN(this->get_logger(),
+    "[RESET] reset_after_landing() chamado — zerando todas as flags e comandos do sistema de pouso.");
+
+  state_voo_ = 0;
+  pouso_em_andamento_ = false;
+  controlador_ativo_ = false;
+  trajectory_started_ = false;
+  pouso_start_time_set_ = false;
+  offboard_activated_ = false;
+  activation_confirmed_ = false;
+  takeoff_counter_ = 0;
+  trajectory_waypoints_.clear();
+  current_waypoint_idx_ = 0;
+  takeoff_cmd_id_.reset();
+  hover_cmd_id_.reset();
+  trajectory_cmd_id_.reset();
+  land_cmd_id_.reset();
+
+  RCLCPP_WARN(this->get_logger(),
+    "[RESET] state_voo_=%d | pouso_em_andamento_=%d | offboard_activated_=%d"
+    " | activation_confirmed_=%d | controlador_ativo_=%d"
+    " | trajectory_started_=%d | takeoff_counter_=%d | current_waypoint_idx_=%d",
+    state_voo_, static_cast<int>(pouso_em_andamento_),
+    static_cast<int>(offboard_activated_), static_cast<int>(activation_confirmed_),
+    static_cast<int>(controlador_ativo_), static_cast<int>(trajectory_started_),
+    takeoff_counter_, current_waypoint_idx_);
+}
+
 void DroneControllerCompleto::complete_landing_mode_a()
 {
   if (land_cmd_id_) {
     cmd_queue_.confirm(*land_cmd_id_, true);
     RCLCPP_WARN(this->get_logger(),
       "✅ [ID=%lu] LAND confirmado (Modo A - sem DISARM)", *land_cmd_id_);
-    land_cmd_id_.reset();
   }
 
   cmd_queue_.save_log("/tmp/drone_commands.log");
@@ -1428,17 +1457,13 @@ void DroneControllerCompleto::complete_landing_mode_a()
 
   ground_hold_z_ = std::max(0.01, config_.land_z_threshold);
 
-  pouso_em_andamento_ = false;
-  controlador_ativo_ = false;
-  trajectory_started_ = false;
-  pouso_start_time_set_ = false;
-  takeoff_counter_ = 0;
-  trajectory_waypoints_.clear();
-  current_waypoint_idx_ = 0;
-  takeoff_cmd_id_.reset();
-  hover_cmd_id_.reset();
-  trajectory_cmd_id_.reset();
+  // Centralized reset of all flags and command IDs
+  reset_after_landing();
 
+  // Mode A: drone remains OFFBOARD+ARMED; restore the flags accordingly
+  // and transition to state 5 (standby on ground) instead of state 0.
+  offboard_activated_ = true;
+  activation_confirmed_ = true;
   state_voo_ = 5;
 
   RCLCPP_WARN(this->get_logger(), "🔍 DEBUG MODO A (estado 5):");
@@ -1457,7 +1482,6 @@ void DroneControllerCompleto::complete_landing_mode_b()
     cmd_queue_.confirm(*land_cmd_id_, true);
     RCLCPP_WARN(this->get_logger(),
       "✅ [ID=%lu] LAND confirmado - pouso concluído", *land_cmd_id_);
-    land_cmd_id_.reset();
   }
 
   cmd_queue_.save_log("/tmp/drone_commands.log");
@@ -1467,23 +1491,8 @@ void DroneControllerCompleto::complete_landing_mode_b()
   RCLCPP_WARN(this->get_logger(),
     "\n✅ POUSO CONCLUÍDO! Aguardando novo comando de waypoint para decolar novamente...\n");
 
-  state_voo_ = 0;
-  pouso_em_andamento_ = false;
-  controlador_ativo_ = false;
-  trajectory_started_ = false;
-  pouso_start_time_set_ = false;
-  offboard_activated_ = false;
-  activation_confirmed_ = false;
-  takeoff_counter_ = 0;
-  trajectory_waypoints_.clear();
-  current_waypoint_idx_ = 0;
-  takeoff_cmd_id_.reset();
-  hover_cmd_id_.reset();
-  trajectory_cmd_id_.reset();
-
-  RCLCPP_WARN(this->get_logger(), "🔍 DEBUG RESET EM ESTADO 4:");
-  RCLCPP_WARN(this->get_logger(), "   offboard_activated_=%d (deve ser 0)", offboard_activated_);
-  RCLCPP_WARN(this->get_logger(), "   state_voo_=%d (deve ser 0)", state_voo_);
+  // Centralized reset of all flags and command IDs (sets state_voo_=0)
+  reset_after_landing();
 }
 
 void DroneControllerCompleto::handle_state4_landing()
