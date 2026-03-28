@@ -176,6 +176,7 @@ void DroneControllerCompleto::init_variables()
   last_z_ = 0.0;
   pouso_start_time_set_ = false;
   pouso_start_time_ = this->now();
+  disarm_requested_ = false;
   last_waypoint_goal_.pose.position.x = 0.0;
   last_waypoint_goal_.pose.position.y = 0.0;
   last_waypoint_goal_.pose.position.z = config_.hover_altitude;
@@ -669,11 +670,11 @@ bool DroneControllerCompleto::handle_state4_disarm_reset()
   if (state_voo_ != 4) { return false; }
   if (!current_state_.armed) {
     RCLCPP_INFO(this->get_logger(), "✅ DRONE DESARMADO! Pronto para novo ciclo");
-    offboard_activated_ = false;
-    activation_confirmed_ = false;
-    state_voo_ = 0;
-    takeoff_counter_ = 0;
-    pouso_em_andamento_ = false;
+    disarm_requested_ = false;
+    reset_after_landing();
+  } else if (disarm_requested_) {
+    RCLCPP_INFO(this->get_logger(),
+      "[DISARM] Aguardando confirmação de DISARM pelo FCU (armed=1); ignorando waypoint recebido.");
   }
   return true;
 }
@@ -1422,6 +1423,7 @@ void DroneControllerCompleto::reset_after_landing()
   offboard_activated_ = false;
   activation_confirmed_ = false;
   takeoff_counter_ = 0;
+  disarm_requested_ = false;
   trajectory_waypoints_.clear();
   current_waypoint_idx_ = 0;
   takeoff_cmd_id_.reset();
@@ -1475,9 +1477,6 @@ void DroneControllerCompleto::complete_landing_mode_a()
 
 void DroneControllerCompleto::complete_landing_mode_b()
 {
-  RCLCPP_WARN(this->get_logger(), "🔌 Solicitando DISARM...");
-  request_disarm();
-
   if (land_cmd_id_) {
     cmd_queue_.confirm(*land_cmd_id_, true);
     RCLCPP_WARN(this->get_logger(),
@@ -1489,14 +1488,48 @@ void DroneControllerCompleto::complete_landing_mode_b()
     "💾 Histórico de comandos salvo em /tmp/drone_commands.log");
 
   RCLCPP_WARN(this->get_logger(),
-    "\n✅ POUSO CONCLUÍDO! Aguardando novo comando de waypoint para decolar novamente...\n");
+    "\n✅ POUSO CONCLUÍDO! Solicitando DISARM e aguardando confirmação do FCU...\n");
 
-  // Centralized reset of all flags and command IDs (sets state_voo_=0)
-  reset_after_landing();
+  // Mark that we are waiting for DISARM confirmation before resetting flags.
+  // The reset is performed only after current_state_.armed becomes false.
+  disarm_requested_ = true;
+  // Clear these early so handle_state4_landing() does NOT re-enter the
+  // landing-timeout block and re-call complete_landing_mode_b() while
+  // we are still waiting for the FCU to confirm DISARM. All other flags
+  // are cleaned up inside reset_after_landing() once DISARM is confirmed.
+  pouso_em_andamento_ = false;
+  pouso_start_time_set_ = false;
+
+  if (current_state_.armed) {
+    RCLCPP_WARN(this->get_logger(), "🔌 Solicitando DISARM...");
+    request_disarm();
+  } else {
+    RCLCPP_WARN(this->get_logger(),
+      "[DISARM] Drone já está desarmado — reset imediato sem enviar DISARM ao FCU.");
+    disarm_requested_ = false;
+    reset_after_landing();
+  }
 }
 
 void DroneControllerCompleto::handle_state4_landing()
 {
+  // Wait for FCU to confirm DISARM before resetting flags (Mode B).
+  // reset_after_landing() must only run after armed==false is observed.
+  if (disarm_requested_) {
+    if (!current_state_.armed) {
+      RCLCPP_INFO(this->get_logger(),
+        "✅ DISARM confirmado pelo FCU — realizando reset do sistema de pouso.");
+      disarm_requested_ = false;
+      reset_after_landing();
+      RCLCPP_WARN(this->get_logger(),
+        "⏳ Aguardando novo comando de waypoint para decolar novamente...");
+    } else {
+      RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 3000,
+        "⏳ [DISARM] Aguardando confirmação de DISARM pelo FCU...");
+    }
+    return;
+  }
+
   if (cycle_count_ % 500 == 0) {
     RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 10000,
       "🛑 CONTROLADOR PAUSADO | drone_soft_land fazendo pouso...");
