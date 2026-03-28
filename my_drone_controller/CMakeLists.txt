@@ -16,26 +16,25 @@ find_package(rcl_interfaces REQUIRED)
 find_package(drone_control REQUIRED)
 
 # 2. DIRETÓRIOS DE INCLUDE (Deve vir ANTES do add_executable)
-# Adicionei todas as variações que vi na sua árvore de arquivos
-# Adicione o caminho exato para a subpasta lib
-# Adicione o caminho exato para a subpasta lib dentro de include
 include_directories(
   include
-  include/lib   # <--- ESSA LINHA É A CHAVE
+  include/lib
   src
 )
 
 # =========================================================
-# 1. EXECUTÁVEL DO MATLAB (O nosso drone_node)
-# Aqui listamos apenas os arquivos que compõem este nó específico
+# 1. EXECUTÁVEL PRINCIPAL DO DRONE
+# Código dividido em módulos: command_queue, waypoint_validation,
+# drone_controller_completo e main.
 # =========================================================
-add_executable(drone_node 
-  src/main_codegen.cpp
+add_executable(drone_node
+  src/main.cpp
+  src/command_queue.cpp
+  src/waypoint_validation.cpp
+  src/drone_controller_completo.cpp
   src/Drone_codegen.cpp
   src/TrajectoryPlanner_codegen.cpp
   src/rt_nonfinite.cpp
-  # ATENÇÃO: Se você copiou arquivos .cpp de matemática do MATLAB 
-  # (como cos.cpp, mldivide.cpp, etc), adicione-os nesta lista também!
 )
 
 # Adiciona dependências para o drone_node
@@ -72,6 +71,11 @@ install(TARGETS
 # seja acessível via 'share/<package>/config/drone_config.yaml'.
 install(DIRECTORY config/
   DESTINATION share/${PROJECT_NAME}/config
+)
+
+# Instala os headers públicos do pacote
+install(DIRECTORY include/
+  DESTINATION include
 )
 
 ament_package()
