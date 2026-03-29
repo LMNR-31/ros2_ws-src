@@ -112,6 +112,10 @@ private:
   // ── Shared waypoint-goal helpers ─────────────────────────────────────────
   bool check_landing_in_flight(double z);
   bool handle_state4_disarm_reset();
+  /// Logs a WARN with all relevant dirty-state flags; call before reset_after_landing().
+  void log_dirty_takeoff_state(const char * context);
+  /// Logs a DEBUG snapshot of the key FSM flags; call before/after takeoff setup.
+  void log_takeoff_debug_flags(const char * tag);
   /// Returns true when the FSM is actively in flight (states 1–3).
   bool is_in_flight() const { return state_voo_ == 1 || state_voo_ == 2 || state_voo_ == 3; }
   /// Returns true when any flag from the previous flight cycle was not reset.
