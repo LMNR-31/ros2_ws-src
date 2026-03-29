@@ -51,6 +51,7 @@ void DroneControllerCompleto::load_parameters()
   this->declare_parameter("command_timeout",         config_.command_timeout);
   this->declare_parameter("landing_timeout",         config_.landing_timeout);
   this->declare_parameter("offboard_confirm_timeout", config_.offboard_confirm_timeout);
+  this->declare_parameter("takeoff_z_boost",         config_.takeoff_z_boost);
 
   config_.hover_altitude          = this->get_parameter("hover_altitude").as_double();
   config_.hover_altitude_margin   = this->get_parameter("hover_altitude_margin").as_double();
@@ -63,6 +64,7 @@ void DroneControllerCompleto::load_parameters()
   config_.command_timeout         = this->get_parameter("command_timeout").as_double();
   config_.landing_timeout         = this->get_parameter("landing_timeout").as_double();
   config_.offboard_confirm_timeout = this->get_parameter("offboard_confirm_timeout").as_double();
+  config_.takeoff_z_boost         = this->get_parameter("takeoff_z_boost").as_double();
 
   this->declare_parameter<bool>("enabled", true);
   enabled_ = this->get_parameter("enabled").as_bool();
@@ -83,6 +85,10 @@ void DroneControllerCompleto::load_parameters()
   RCLCPP_INFO(this->get_logger(),
     "⚙️  Configuração de Altitude: Mínima=%.2f m | Pouso detectado: Z < %.2f m | Máxima=%.2f m",
     config_.min_altitude, config_.land_z_threshold, config_.max_altitude);
+  RCLCPP_INFO(this->get_logger(),
+    "⚙️  Boost de decolagem: takeoff_z_boost=%.2f m "
+    "(Z_alvo ≥ Z_real + takeoff_z_boost após ARM, evita auto-disarm do PX4)",
+    config_.takeoff_z_boost);
 }
 
 void DroneControllerCompleto::setup_publishers()
@@ -1356,7 +1362,31 @@ void DroneControllerCompleto::handle_state1_takeoff()
     if (!wait_for_offboard_arm_confirmation()) { return; }
   }
 
-  double target_altitude = last_waypoint_goal_.pose.position.z;
+  // Compute the takeoff target altitude with a mandatory Z boost above the
+  // current odometry reading to prevent PX4 auto-disarm.
+  //
+  // After ARM is accepted, PX4 starts an auto-disarm timer if no upward
+  // movement is detected within a few seconds.  If the published setpoint Z
+  // equals (or is very close to) the current ground altitude, the FCU sees
+  // no climb intent and immediately disarms.
+  //
+  // Guarantee: target_altitude ≥ current_z_real_ + config_.takeoff_z_boost
+  //            and target_altitude ≥ config_.hover_altitude
+  // so PX4 always detects a clear upward movement command.
+  // The increment (takeoff_z_boost, default 0.7 m) is configured in
+  // DroneConfig and overridable via the 'takeoff_z_boost' ROS 2 parameter.
+  double target_altitude = std::max(
+    config_.hover_altitude,
+    current_z_real_ + config_.takeoff_z_boost);
+
+  if (takeoff_counter_ == 0) {
+    RCLCPP_INFO(this->get_logger(),
+      "⬆️ [TAKEOFF BOOST] Z_real=%.2fm | boost=+%.2fm | hover_alt=%.2fm "
+      "→ Z_alvo=%.2fm  (garante subida para evitar auto-disarm do PX4)",
+      current_z_real_, config_.takeoff_z_boost,
+      config_.hover_altitude, target_altitude);
+  }
+
   publish_takeoff_climb_setpoint(target_altitude);
   finalize_takeoff_on_altitude_reached(target_altitude);
 }

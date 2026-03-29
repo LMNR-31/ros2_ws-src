@@ -33,6 +33,17 @@ struct DroneConfig {
   /// Maximum allowed |X| or |Y| distance for incoming waypoints [m]
   double max_waypoint_distance{100.0};
 
+  // ── Takeoff boost ─────────────────────────────────────────────────────
+  /// Minimum Z increment above current odometry altitude applied to the
+  /// takeoff setpoint immediately after arming [m].
+  ///
+  /// After the FCU accepts ARM in OFFBOARD mode, PX4 starts an auto-disarm
+  /// timer if no upward movement is detected within a few seconds.  Publishing
+  /// a Z target of at least (current_z_real + takeoff_z_boost) guarantees that
+  /// the FCU sees a clear climb intent and does not trigger auto-disarm.
+  /// The effective target is: max(hover_altitude, current_z_real + takeoff_z_boost).
+  double takeoff_z_boost{0.7};
+
   // ── Timeouts ──────────────────────────────────────────────────────────
   /// Timeout waiting for OFFBOARD + ARM confirmation from FCU [s]
   double activation_timeout{5.0};
