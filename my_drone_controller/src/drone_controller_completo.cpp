@@ -47,20 +47,22 @@ void DroneControllerCompleto::load_parameters()
   this->declare_parameter("waypoint_duration",     config_.waypoint_duration);
   this->declare_parameter("max_waypoint_distance", config_.max_waypoint_distance);
   this->declare_parameter("land_z_threshold",      config_.land_z_threshold);
-  this->declare_parameter("activation_timeout",    config_.activation_timeout);
-  this->declare_parameter("command_timeout",       config_.command_timeout);
-  this->declare_parameter("landing_timeout",       config_.landing_timeout);
+  this->declare_parameter("activation_timeout",      config_.activation_timeout);
+  this->declare_parameter("command_timeout",         config_.command_timeout);
+  this->declare_parameter("landing_timeout",         config_.landing_timeout);
+  this->declare_parameter("offboard_confirm_timeout", config_.offboard_confirm_timeout);
 
-  config_.hover_altitude        = this->get_parameter("hover_altitude").as_double();
-  config_.hover_altitude_margin = this->get_parameter("hover_altitude_margin").as_double();
-  config_.max_altitude          = this->get_parameter("max_altitude").as_double();
-  config_.min_altitude          = this->get_parameter("min_altitude").as_double();
-  config_.waypoint_duration     = this->get_parameter("waypoint_duration").as_double();
-  config_.max_waypoint_distance = this->get_parameter("max_waypoint_distance").as_double();
-  config_.land_z_threshold      = this->get_parameter("land_z_threshold").as_double();
-  config_.activation_timeout    = this->get_parameter("activation_timeout").as_double();
-  config_.command_timeout       = this->get_parameter("command_timeout").as_double();
-  config_.landing_timeout       = this->get_parameter("landing_timeout").as_double();
+  config_.hover_altitude          = this->get_parameter("hover_altitude").as_double();
+  config_.hover_altitude_margin   = this->get_parameter("hover_altitude_margin").as_double();
+  config_.max_altitude            = this->get_parameter("max_altitude").as_double();
+  config_.min_altitude            = this->get_parameter("min_altitude").as_double();
+  config_.waypoint_duration       = this->get_parameter("waypoint_duration").as_double();
+  config_.max_waypoint_distance   = this->get_parameter("max_waypoint_distance").as_double();
+  config_.land_z_threshold        = this->get_parameter("land_z_threshold").as_double();
+  config_.activation_timeout      = this->get_parameter("activation_timeout").as_double();
+  config_.command_timeout         = this->get_parameter("command_timeout").as_double();
+  config_.landing_timeout         = this->get_parameter("landing_timeout").as_double();
+  config_.offboard_confirm_timeout = this->get_parameter("offboard_confirm_timeout").as_double();
 
   this->declare_parameter<bool>("enabled", true);
   enabled_ = this->get_parameter("enabled").as_bool();
@@ -159,6 +161,8 @@ void DroneControllerCompleto::init_variables()
   pouso_em_andamento_ = false;
   cycle_count_ = 0;
   offboard_activated_ = false;
+  offboard_mode_confirmed_ = false;
+  arm_requested_ = false;
   activation_confirmed_ = false;
   takeoff_counter_ = 0;
   waypoint_goal_received_ = false;
@@ -213,16 +217,22 @@ void DroneControllerCompleto::activate_offboard_arm_if_needed()
   if (current_state_.armed && current_state_.mode == "OFFBOARD") {
     RCLCPP_INFO(this->get_logger(),
       "🔋 Já OFFBOARD+ARM — reutilizando ativação existente para levantamento.");
-    // Skip the streaming phase: the FCU is already receiving setpoints
-    // and ARM is already confirmed.
+    // Skip the full streaming/OFFBOARD/ARM sequence: the FCU is already in
+    // OFFBOARD mode and armed, so all activation flags are set to reflect
+    // the confirmed state and the FSM jumps straight to takeoff climb.
     initial_stream_done_ = true;
+    offboard_activated_ = true;
+    offboard_mode_confirmed_ = true;
+    arm_requested_ = true;
     return;
   }
   // Reset activation flags so handle_state1_takeoff() re-runs the full
-  // streaming → OFFBOARD → ARM sequence for this new takeoff attempt.
+  // streaming → OFFBOARD → wait-for-OFFBOARD → ARM sequence for this new takeoff attempt.
   RCLCPP_INFO(this->get_logger(),
     "🔋 Preparando streaming inicial de setpoints para OFFBOARD+ARM...");
   offboard_activated_ = false;
+  offboard_mode_confirmed_ = false;
+  arm_requested_ = false;
   activation_confirmed_ = false;
   initial_stream_count_ = 0;
   initial_stream_done_ = false;
@@ -653,12 +663,15 @@ void DroneControllerCompleto::log_dirty_takeoff_state(const char * context)
   RCLCPP_WARN(this->get_logger(),
     "[%s] Detectado estado sujo de ciclo anterior — limpando antes de novo takeoff. "
     "takeoff_cmd_id_=%s | activation_confirmed_=%d | offboard_activated_=%d "
+    "| offboard_mode_confirmed_=%d | arm_requested_=%d "
     "| disarm_requested_=%d | pouso_em_andamento_=%d | state_voo_=%d "
     "| trajectory_cmd_id_=%s | hover_cmd_id_=%s",
     context,
     takeoff_cmd_id_ ? "set" : "empty",
     static_cast<int>(activation_confirmed_),
     static_cast<int>(offboard_activated_),
+    static_cast<int>(offboard_mode_confirmed_),
+    static_cast<int>(arm_requested_),
     static_cast<int>(disarm_requested_),
     static_cast<int>(pouso_em_andamento_),
     state_voo_,
@@ -669,10 +682,13 @@ void DroneControllerCompleto::log_dirty_takeoff_state(const char * context)
 void DroneControllerCompleto::log_takeoff_debug_flags(const char * tag)
 {
   RCLCPP_INFO(this->get_logger(),
-    "🔍 DEBUG FLAGS %s: state_voo_=%d offboard_activated_=%d activation_confirmed_=%d "
+    "🔍 DEBUG FLAGS %s: state_voo_=%d offboard_activated_=%d "
+    "offboard_mode_confirmed_=%d arm_requested_=%d activation_confirmed_=%d "
     "disarm_requested_=%d takeoff_cmd_id_=%s takeoff_counter_=%d current_waypoint_idx_=%d",
     tag, state_voo_,
     static_cast<int>(offboard_activated_),
+    static_cast<int>(offboard_mode_confirmed_),
+    static_cast<int>(arm_requested_),
     static_cast<int>(activation_confirmed_),
     static_cast<int>(disarm_requested_),
     takeoff_cmd_id_ ? "set" : "empty",
@@ -1039,9 +1055,17 @@ void DroneControllerCompleto::handle_state0_wait_waypoint()
 
 void DroneControllerCompleto::request_arm_and_offboard_activation()
 {
-  RCLCPP_INFO(this->get_logger(), "📡 Solicitando OFFBOARD+ARM...");
+  // Per PX4/MAVROS best practice, OFFBOARD and ARM must be sent SEPARATELY.
+  // Sending ARM immediately after (or simultaneously with) the OFFBOARD request
+  // causes the FCU to reject ARM even when OFFBOARD is accepted, because PX4
+  // enforces that the mode transition must be complete before it honours ARM.
+  //
+  // This function therefore requests ONLY the OFFBOARD mode change.  The ARM
+  // command is sent later by handle_state1_takeoff(), after wait_for_offboard_mode()
+  // confirms that the FCU has actually switched to OFFBOARD.
+  RCLCPP_INFO(this->get_logger(),
+    "📡 Solicitando modo OFFBOARD (ARM aguardará confirmação do FCU)...");
   request_offboard();
-  request_arm();
   offboard_activated_ = true;
   activation_time_ = this->now();
 }
@@ -1088,6 +1112,43 @@ void DroneControllerCompleto::stream_initial_setpoints()
   }
 }
 
+void DroneControllerCompleto::wait_for_offboard_mode()
+{
+  // PX4/MAVROS requires that ARM be sent AFTER the FCU has confirmed the mode
+  // change to OFFBOARD.  This function polls current_state_.mode and, once the
+  // FCU reports "OFFBOARD", sets offboard_mode_confirmed_ so that
+  // handle_state1_takeoff() can proceed to call request_arm() in the next cycle.
+  // If the FCU does not confirm within offboard_confirm_timeout seconds the
+  // OFFBOARD request is retried from scratch.
+
+  if (current_state_.mode == "OFFBOARD") {
+    RCLCPP_INFO(this->get_logger(),
+      "✅ FCU confirmou modo OFFBOARD — aguardando ARM na próxima etapa...");
+    offboard_mode_confirmed_ = true;
+    // Reset activation_time_ so the ARM-wait timeout (activation_timeout) starts
+    // counting only from the moment OFFBOARD was actually confirmed.
+    activation_time_ = this->now();
+    return;
+  }
+
+  if ((this->now() - activation_time_).seconds() > config_.offboard_confirm_timeout) {
+    RCLCPP_WARN(this->get_logger(),
+      "⚠️ Timeout esperando confirmação de modo OFFBOARD (%.0f s)! Tentando novamente...",
+      config_.offboard_confirm_timeout);
+    RCLCPP_WARN(this->get_logger(), "   Estado atual: mode=%s",
+      current_state_.mode.c_str());
+    // Reset so the next cycle re-requests OFFBOARD and starts fresh.
+    offboard_activated_ = false;
+    offboard_mode_confirmed_ = false;
+    arm_requested_ = false;
+    return;
+  }
+
+  RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+    "⏳ Aguardando FCU confirmar modo OFFBOARD... | mode=%s",
+    current_state_.mode.c_str());
+}
+
 bool DroneControllerCompleto::wait_for_offboard_arm_confirmation()
 {
   if (current_state_.armed && current_state_.mode == "OFFBOARD") {
@@ -1113,14 +1174,17 @@ bool DroneControllerCompleto::wait_for_offboard_arm_confirmation()
       config_.activation_timeout);
     RCLCPP_WARN(this->get_logger(), "   Estado: armed=%d | mode=%s",
       current_state_.armed, current_state_.mode.c_str());
+    // Reset all activation flags so the full sequence restarts from OFFBOARD request.
     offboard_activated_ = false;
+    offboard_mode_confirmed_ = false;
+    arm_requested_ = false;
     activation_confirmed_ = false;
     takeoff_counter_ = 0;
     return false;
   }
 
   RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
-    "⏳ Aguardando OFFBOARD+ARM... | armed=%d | mode=%s",
+    "⏳ Aguardando ARM... | armed=%d | mode=%s",
     current_state_.armed, current_state_.mode.c_str());
   takeoff_counter_++;
   return false;
@@ -1183,7 +1247,7 @@ void DroneControllerCompleto::finalize_takeoff_on_altitude_reached(double target
 
 void DroneControllerCompleto::handle_state1_takeoff()
 {
-  // Step 1 — Pre-ARM streaming: publish setpoints before requesting OFFBOARD+ARM.
+  // Step 1 — Pre-ARM streaming: publish setpoints before requesting OFFBOARD.
   // PX4 rejects ARM in OFFBOARD mode when no setpoints have been streamed yet.
   // stream_initial_setpoints() accumulates INITIAL_STREAM_THRESHOLD messages
   // (~200 ms at 100 Hz) and sets initial_stream_done_ when the threshold is met.
@@ -1192,11 +1256,35 @@ void DroneControllerCompleto::handle_state1_takeoff()
     return;
   }
 
+  // Step 2 — Request OFFBOARD mode only (ARM is withheld until OFFBOARD is confirmed).
+  // Sending ARM simultaneously with OFFBOARD is rejected by PX4 because the mode
+  // transition has not completed yet.  See PX4 MAVROS offboard guide and the
+  // wait_for_offboard_mode() implementation above for full rationale.
   if (!offboard_activated_) {
     request_arm_and_offboard_activation();
     return;
   }
 
+  // Step 3 — Wait for the FCU to report mode == "OFFBOARD" before arming.
+  // offboard_mode_confirmed_ is set by wait_for_offboard_mode() once the FCU
+  // confirms the transition.  Only then does the sequence proceed to ARM.
+  if (!offboard_mode_confirmed_) {
+    wait_for_offboard_mode();
+    return;
+  }
+
+  // Step 4 — ARM the vehicle, now that OFFBOARD mode is confirmed by the FCU.
+  // Sending ARM only after OFFBOARD is confirmed avoids the FCU rejecting ARM
+  // due to an incomplete mode transition.
+  if (!arm_requested_) {
+    RCLCPP_INFO(this->get_logger(),
+      "🔋 Modo OFFBOARD confirmado pelo FCU — solicitando ARM agora...");
+    request_arm();
+    arm_requested_ = true;
+    return;
+  }
+
+  // Step 5 — Wait for ARM confirmation from the FCU.
   if (!activation_confirmed_) {
     if (!wait_for_offboard_arm_confirmation()) { return; }
   }
@@ -1431,6 +1519,8 @@ void DroneControllerCompleto::reset_after_landing()
 
   // OFFBOARD/ARM activation — must be zero so the next takeoff activates fresh
   offboard_activated_ = false;
+  offboard_mode_confirmed_ = false;
+  arm_requested_ = false;
   activation_confirmed_ = false;
 
   // DISARM already completed
