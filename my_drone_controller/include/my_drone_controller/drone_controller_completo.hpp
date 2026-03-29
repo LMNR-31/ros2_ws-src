@@ -74,6 +74,13 @@ public:
   /// enough for the PX4 FCU to accept the ARM command in OFFBOARD mode.
   static constexpr int INITIAL_STREAM_THRESHOLD = 20;
 
+  /// Number of setpoints to publish AFTER the FCU confirms OFFBOARD mode and
+  /// BEFORE sending the ARM command.  At 100 Hz (10 ms/iteration) this equals
+  /// 1.5 seconds of continuous streaming — equivalent to 30 setpoints at 50 ms
+  /// each as recommended by the PX4/MAVROS offboard guide.  The FCU needs to
+  /// see a stable setpoint stream in OFFBOARD mode before it will accept ARM.
+  static constexpr int POST_OFFBOARD_STREAM_THRESHOLD = 150;
+
   DroneControllerCompleto();
 
 private:
@@ -101,6 +108,23 @@ private:
    * Call from handle_state1_takeoff() before request_arm_and_offboard_activation().
    */
   void stream_initial_setpoints();
+
+  /**
+   * @brief Stream position setpoints for 1.5 s AFTER the FCU confirms OFFBOARD.
+   *
+   * Even after OFFBOARD mode is confirmed, the PX4 FCU may still reject ARM if
+   * the setpoint stream has not been running long enough.  Per the PX4/MAVROS
+   * offboard guide, the vehicle must receive a continuous stream of setpoints
+   * for at least 1.5 seconds in OFFBOARD mode before ARM is accepted.  This method
+   * publishes POST_OFFBOARD_STREAM_THRESHOLD setpoints (150 × 10 ms = 1.5 s at
+   * 100 Hz, providing the same duration as the PX4/MAVROS recommendation of 30
+   * setpoints at 50 ms each) and sets post_offboard_stream_done_ once the
+   * threshold is reached.
+   *
+   * Call from handle_state1_takeoff() between OFFBOARD confirmation (step 3)
+   * and the ARM request (step 4).
+   */
+  void stream_post_offboard_setpoints();
 
   // ── Parameter handlers ───────────────────────────────────────────────────
   bool apply_enabled_param(const rclcpp::Parameter & p,
@@ -143,6 +167,7 @@ private:
            offboard_activated_ || offboard_mode_confirmed_ || arm_requested_ ||
            disarm_requested_ || pouso_em_andamento_ ||
            trajectory_cmd_id_.has_value() || hover_cmd_id_.has_value() ||
+           post_offboard_stream_done_ ||
            state_voo_ != 0;
   }
 
@@ -293,6 +318,14 @@ private:
   /// True once INITIAL_STREAM_THRESHOLD setpoints have been published and
   /// ARM+OFFBOARD can safely be requested from the FSM.
   bool initial_stream_done_{false};
+
+  // ── Post-OFFBOARD setpoint streaming counters ─────────────────────────────
+  /// Number of setpoints published since OFFBOARD mode was confirmed by the FCU.
+  /// Used to enforce a 1.5-second streaming window before ARM is requested.
+  int post_offboard_stream_count_{0};
+  /// True once POST_OFFBOARD_STREAM_THRESHOLD setpoints have been published
+  /// after OFFBOARD confirmation, so ARM can safely be sent to the FCU.
+  bool post_offboard_stream_done_{false};
 
   // ── Thread safety ────────────────────────────────────────────────────────
   std::mutex mutex_;

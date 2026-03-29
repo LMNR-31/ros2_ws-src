@@ -198,6 +198,8 @@ void DroneControllerCompleto::init_variables()
   trajectory_4d_mode_ = false;
   initial_stream_count_ = 0;
   initial_stream_done_ = false;
+  post_offboard_stream_count_ = 0;
+  post_offboard_stream_done_ = false;
 }
 
 // ============================================================
@@ -223,6 +225,7 @@ void DroneControllerCompleto::activate_offboard_arm_if_needed()
     initial_stream_done_ = true;
     offboard_activated_ = true;
     offboard_mode_confirmed_ = true;
+    post_offboard_stream_done_ = true;
     arm_requested_ = true;
     return;
   }
@@ -236,6 +239,8 @@ void DroneControllerCompleto::activate_offboard_arm_if_needed()
   activation_confirmed_ = false;
   initial_stream_count_ = 0;
   initial_stream_done_ = false;
+  post_offboard_stream_count_ = 0;
+  post_offboard_stream_done_ = false;
   // ARM and OFFBOARD are NOT requested here.  They will be triggered by
   // handle_state1_takeoff() only after stream_initial_setpoints() has
   // published INITIAL_STREAM_THRESHOLD setpoints to satisfy the PX4 FCU.
@@ -664,6 +669,7 @@ void DroneControllerCompleto::log_dirty_takeoff_state(const char * context)
     "[%s] Detectado estado sujo de ciclo anterior — limpando antes de novo takeoff. "
     "takeoff_cmd_id_=%s | activation_confirmed_=%d | offboard_activated_=%d "
     "| offboard_mode_confirmed_=%d | arm_requested_=%d "
+    "| post_offboard_stream_done_=%d "
     "| disarm_requested_=%d | pouso_em_andamento_=%d | state_voo_=%d "
     "| trajectory_cmd_id_=%s | hover_cmd_id_=%s",
     context,
@@ -672,6 +678,7 @@ void DroneControllerCompleto::log_dirty_takeoff_state(const char * context)
     static_cast<int>(offboard_activated_),
     static_cast<int>(offboard_mode_confirmed_),
     static_cast<int>(arm_requested_),
+    static_cast<int>(post_offboard_stream_done_),
     static_cast<int>(disarm_requested_),
     static_cast<int>(pouso_em_andamento_),
     state_voo_,
@@ -1112,6 +1119,45 @@ void DroneControllerCompleto::stream_initial_setpoints()
   }
 }
 
+void DroneControllerCompleto::stream_post_offboard_setpoints()
+{
+  // PX4/MAVROS rejects ARM even after accepting OFFBOARD mode if the setpoint
+  // stream has not been active long enough.  The FCU requires at least 1.5 seconds
+  // of continuous setpoints in OFFBOARD mode before it will honour an ARM request.
+  //
+  // This function is called every control-loop iteration (100 Hz / 10 ms) AFTER
+  // the FCU confirms OFFBOARD and BEFORE ARM is requested.  It accumulates
+  // POST_OFFBOARD_STREAM_THRESHOLD = 150 setpoints at 10 ms per call — 1.5 s
+  // total at 100 Hz, providing the same duration as the PX4/MAVROS recommendation
+  // of 30 setpoints at 50 ms each — then sets post_offboard_stream_done_ to allow
+  // handle_state1_takeoff() to proceed to the ARM step.
+
+  publishPositionTarget(
+    last_waypoint_goal_.pose.position.x,
+    last_waypoint_goal_.pose.position.y,
+    last_waypoint_goal_.pose.position.z,
+    0.0, MASK_POS_ONLY);
+
+  post_offboard_stream_count_++;
+
+  if (post_offboard_stream_count_ == 1) {
+    RCLCPP_INFO(this->get_logger(),
+      "📡 [STREAM] OFFBOARD confirmado — iniciando streaming prolongado de setpoints "
+      "antes do ARM (%d setpoints × 10 ms = %.1f s)...",
+      POST_OFFBOARD_STREAM_THRESHOLD,
+      POST_OFFBOARD_STREAM_THRESHOLD * 0.01);
+  }
+
+  if (post_offboard_stream_count_ >= POST_OFFBOARD_STREAM_THRESHOLD) {
+    post_offboard_stream_done_ = true;
+    RCLCPP_INFO(this->get_logger(),
+      "✅ [STREAM] Streaming pós-OFFBOARD concluído (%d setpoints / %.1f s). "
+      "Enviando ARM agora...",
+      post_offboard_stream_count_,
+      post_offboard_stream_count_ * 0.01);
+  }
+}
+
 void DroneControllerCompleto::wait_for_offboard_mode()
 {
   // PX4/MAVROS requires that ARM be sent AFTER the FCU has confirmed the mode
@@ -1141,6 +1187,8 @@ void DroneControllerCompleto::wait_for_offboard_mode()
     offboard_activated_ = false;
     offboard_mode_confirmed_ = false;
     arm_requested_ = false;
+    post_offboard_stream_count_ = 0;
+    post_offboard_stream_done_ = false;
     return;
   }
 
@@ -1179,6 +1227,8 @@ bool DroneControllerCompleto::wait_for_offboard_arm_confirmation()
     offboard_mode_confirmed_ = false;
     arm_requested_ = false;
     activation_confirmed_ = false;
+    post_offboard_stream_count_ = 0;
+    post_offboard_stream_done_ = false;
     takeoff_counter_ = 0;
     return false;
   }
@@ -1273,9 +1323,26 @@ void DroneControllerCompleto::handle_state1_takeoff()
     return;
   }
 
-  // Step 4 — ARM the vehicle, now that OFFBOARD mode is confirmed by the FCU.
-  // Sending ARM only after OFFBOARD is confirmed avoids the FCU rejecting ARM
-  // due to an incomplete mode transition.
+  // Step 3.5 — Post-OFFBOARD extended streaming: publish setpoints for 1.5 s
+  // after OFFBOARD is confirmed, BEFORE sending ARM.
+  //
+  // Rationale (PX4/MAVROS offboard guide): even after the FCU accepts the
+  // OFFBOARD mode change, it may still reject ARM if the setpoint stream has
+  // not been running long enough inside OFFBOARD mode.  Publishing at least
+  // 30 setpoints at 50 ms intervals (= 1.5 s) gives the FCU enough time to
+  // stabilise the mode and accept the subsequent ARM command.
+  //
+  // stream_post_offboard_setpoints() counts calls and sets
+  // post_offboard_stream_done_ once POST_OFFBOARD_STREAM_THRESHOLD is reached.
+  if (!post_offboard_stream_done_) {
+    stream_post_offboard_setpoints();
+    return;
+  }
+
+  // Step 4 — ARM the vehicle, now that OFFBOARD mode is confirmed by the FCU
+  // AND the 1.5-second post-OFFBOARD streaming window has elapsed.
+  // Sending ARM only after OFFBOARD is confirmed AND the stream has been
+  // running long enough avoids the FCU rejecting ARM.
   if (!arm_requested_) {
     RCLCPP_INFO(this->get_logger(),
       "🔋 Modo OFFBOARD confirmado pelo FCU — solicitando ARM agora...");
@@ -1543,6 +1610,10 @@ void DroneControllerCompleto::reset_after_landing()
   // Pre-ARM setpoint streaming state
   initial_stream_count_ = 0;
   initial_stream_done_ = false;
+
+  // Post-OFFBOARD setpoint streaming state (1.5 s window before ARM)
+  post_offboard_stream_count_ = 0;
+  post_offboard_stream_done_ = false;
 
   // Cancel pending commands and reset all command IDs.
   // cancel_all_pending() marks leftover queue entries as FAILED so they don't
