@@ -320,10 +320,20 @@ private:
   /// rises together with the drone because current_z_real_ keeps increasing.
   /// The drone never reaches its own target and climbs without bound.
   ///
-  /// Fix: compute and latch the value once (when takeoff_counter_ == 0),
+  /// Fix: compute and latch the value once (when first_takeoff_cycle_ is true),
   /// then publish it unchanged until the drone arrives at that altitude.
-  /// Reset to -1.0 (sentinel) when entering a new takeoff or after landing.
+  /// Reset to -1.0 (sentinel) and set first_takeoff_cycle_ = true when
+  /// entering a new takeoff or after landing so the next cycle recomputes the
+  /// target from the current measured altitude (current_z_real_).
   double takeoff_target_z_{-1.0};
+
+  /// True at the very start of each takeoff cycle (reset in reset_after_landing()
+  /// and in every takeoff initiator).  handle_state1_takeoff() uses this flag to
+  /// compute takeoff_target_z_ exactly ONCE from current_z_real_, then clears the
+  /// flag so the latched target is reused for the remainder of the climb.
+  /// Without this guard the target would be recalculated every 10 ms and would
+  /// track the rising drone → infinite ascent / PX4 auto-disarm.
+  bool first_takeoff_cycle_{true};
 
   // ── Pre-ARM setpoint streaming counters ──────────────────────────────────
   /// Number of setpoints published so far in the current pre-ARM stream phase.
