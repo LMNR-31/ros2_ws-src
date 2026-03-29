@@ -312,6 +312,19 @@ private:
   bool enabled_{true};
   bool override_active_{false};
 
+  // ── Takeoff target altitude (latched) ────────────────────────────────────
+  /// Fixed Z target computed ONCE at the start of each takeoff cycle.
+  ///
+  /// Bug (infinite ascent): if target_altitude is recalculated every control
+  /// cycle as std::max(hover_altitude, current_z_real_ + boost), the target
+  /// rises together with the drone because current_z_real_ keeps increasing.
+  /// The drone never reaches its own target and climbs without bound.
+  ///
+  /// Fix: compute and latch the value once (when takeoff_counter_ == 0),
+  /// then publish it unchanged until the drone arrives at that altitude.
+  /// Reset to -1.0 (sentinel) when entering a new takeoff or after landing.
+  double takeoff_target_z_{-1.0};
+
   // ── Pre-ARM setpoint streaming counters ──────────────────────────────────
   /// Number of setpoints published so far in the current pre-ARM stream phase.
   int initial_stream_count_{0};

@@ -171,6 +171,7 @@ void DroneControllerCompleto::init_variables()
   arm_requested_ = false;
   activation_confirmed_ = false;
   takeoff_counter_ = 0;
+  takeoff_target_z_ = -1.0;  // -1.0 = sentinel: not yet latched for this takeoff cycle
   waypoint_goal_received_ = false;
   last_z_ = 0.0;
   pouso_start_time_set_ = false;
@@ -1362,30 +1363,34 @@ void DroneControllerCompleto::handle_state1_takeoff()
     if (!wait_for_offboard_arm_confirmation()) { return; }
   }
 
-  // Compute the takeoff target altitude with a mandatory Z boost above the
-  // current odometry reading to prevent PX4 auto-disarm.
+  // Compute (and latch) the takeoff target altitude.
   //
-  // After ARM is accepted, PX4 starts an auto-disarm timer if no upward
-  // movement is detected within a few seconds.  If the published setpoint Z
-  // equals (or is very close to) the current ground altitude, the FCU sees
-  // no climb intent and immediately disarms.
+  // BUG (infinite ascent): if target_altitude is recomputed every control cycle
+  // as std::max(hover_altitude, current_z_real_ + takeoff_z_boost), the target
+  // climbs together with the drone because current_z_real_ keeps increasing as
+  // the drone ascends.  The drone therefore never reaches its own target and
+  // climbs without bound.
   //
-  // Guarantee: target_altitude ≥ current_z_real_ + config_.takeoff_z_boost
-  //            and target_altitude ≥ config_.hover_altitude
-  // so PX4 always detects a clear upward movement command.
-  // The increment (takeoff_z_boost, default 0.7 m) is configured in
-  // DroneConfig and overridable via the 'takeoff_z_boost' ROS 2 parameter.
-  double target_altitude = std::max(
-    config_.hover_altitude,
-    current_z_real_ + config_.takeoff_z_boost);
+  // FIX: compute the target exactly ONCE per takeoff cycle, detected by the
+  // sentinel value takeoff_target_z_ < 0.0 (set to -1.0 in init_variables() and
+  // reset_after_landing()).  Store the result in takeoff_target_z_ and reuse that
+  // fixed value for every subsequent control cycle until the drone arrives or the
+  // FSM transitions away.  A new takeoff cycle always starts with the sentinel.
+  if (takeoff_target_z_ < 0.0) {
+    // Sentinel detected: latch the target — never recalculate it again during this takeoff.
+    takeoff_target_z_ = std::max(
+      config_.hover_altitude,
+      current_z_real_ + config_.takeoff_z_boost);
 
-  if (takeoff_counter_ == 0) {
     RCLCPP_INFO(this->get_logger(),
       "⬆️ [TAKEOFF BOOST] Z_real=%.2fm | boost=+%.2fm | hover_alt=%.2fm "
-      "→ Z_alvo=%.2fm  (garante subida para evitar auto-disarm do PX4)",
+      "→ Z_alvo=%.2fm (fixo até atingir a altitude — evita subida infinita e auto-disarm do PX4)",
       current_z_real_, config_.takeoff_z_boost,
-      config_.hover_altitude, target_altitude);
+      config_.hover_altitude, takeoff_target_z_);
   }
+
+  // Use the latched value for every cycle (takeoff_target_z_ never changes during climb).
+  const double target_altitude = takeoff_target_z_;
 
   publish_takeoff_climb_setpoint(target_altitude);
   finalize_takeoff_on_altitude_reached(target_altitude);
@@ -1625,6 +1630,9 @@ void DroneControllerCompleto::reset_after_landing()
 
   // Counters and indices
   takeoff_counter_ = 0;
+  // Reset the latched takeoff target so the next cycle starts fresh.
+  // See the takeoff_target_z_ comment in the header for the full rationale.
+  takeoff_target_z_ = -1.0;
   current_waypoint_idx_ = 0;
 
   // Waypoints and trajectory
