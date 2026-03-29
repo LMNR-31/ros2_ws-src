@@ -172,6 +172,7 @@ void DroneControllerCompleto::init_variables()
   activation_confirmed_ = false;
   takeoff_counter_ = 0;
   takeoff_target_z_ = -1.0;  // -1.0 = sentinel: not yet latched for this takeoff cycle
+  first_takeoff_cycle_ = true;  // will compute takeoff_target_z_ on first handle_state1_takeoff() call
   waypoint_goal_received_ = false;
   last_z_ = 0.0;
   pouso_start_time_set_ = false;
@@ -498,6 +499,14 @@ void DroneControllerCompleto::handle_single_takeoff_waypoint_command(
     reset_after_landing();  // reset completo: flags + IDs + fila de comandos
   }
 
+  // Ensure takeoff_target_z_ is recomputed from the current measured altitude
+  // (current_z_real_) at the start of the new climb.  reset_after_landing()
+  // sets this flag when called above; set it explicitly here too so the flag
+  // is always true at this point even when no dirty state was detected (e.g.
+  // clean re-takeoff from state 0 after a normal landing cycle).
+  first_takeoff_cycle_ = true;
+  takeoff_target_z_ = -1.0;  // companion sentinel — belt-and-suspenders safety
+
   last_waypoint_goal_.pose = pose;
   pouso_em_andamento_ = false;
   controlador_ativo_ = false;
@@ -588,12 +597,14 @@ void DroneControllerCompleto::waypoints_callback(
   }
 
   if (msg->poses.size() == 1 && last_z >= config_.land_z_threshold) {
-    // Guard: do not start a new takeoff while the drone is still in state 4
-    // (landing / DISARM pending). Mirrors the behaviour of waypoint_goal_callback().
+    // Guard: do not start a new takeoff while the drone is still ARMED in state 4
+    // (DISARM is pending confirmation from the FCU). If the drone is already
+    // disarmed, handle_state4_disarm_reset() performs the reset and returns false
+    // so we fall through and accept the new takeoff command immediately.
     if (handle_state4_disarm_reset()) {
       RCLCPP_WARN(this->get_logger(),
-        "⚠️ [TAKEOFF] Ignorado: drone ainda em estado 4 (pouso/DISARM pendente). "
-        "Aguardando reset completo antes de aceitar novo takeoff.");
+        "⚠️ [TAKEOFF] Ignorado: drone ainda armado em estado 4 (DISARM pendente). "
+        "Aguardando confirmação de DISARM pelo FCU antes de aceitar novo takeoff.");
       return;
     }
     // Guard: warn if a new takeoff arrives while the drone is already in flight.
@@ -659,14 +670,30 @@ bool DroneControllerCompleto::check_landing_in_flight(double z)
 bool DroneControllerCompleto::handle_state4_disarm_reset()
 {
   if (state_voo_ != 4) { return false; }
+
   if (!current_state_.armed) {
-    RCLCPP_INFO(this->get_logger(), "✅ DRONE DESARMADO! Pronto para novo ciclo");
+    // Drone is already disarmed while the FSM is still in state 4 (this can
+    // happen when a new command arrives between the FCU confirming DISARM and
+    // the control-loop's handle_state4_landing() executing the reset).
+    // Perform the reset here and return FALSE so that the caller continues to
+    // process the incoming takeoff command — without this the command would
+    // always be silently dropped, requiring the operator to re-send it.
+    RCLCPP_INFO(this->get_logger(),
+      "✅ [RESET] DRONE DESARMADO em estado 4 — realizando reset imediato para aceitar novo comando.");
     disarm_requested_ = false;
     reset_after_landing();
-  } else if (disarm_requested_) {
+    return false;  // let the caller proceed with the new takeoff command
+  }
+
+  if (disarm_requested_) {
+    // Drone is still armed and we are waiting for the FCU to confirm DISARM.
+    // The new command must be dropped — accepting a takeoff while DISARM is
+    // pending would conflict with the ongoing landing sequence.
     RCLCPP_INFO(this->get_logger(),
       "[DISARM] Aguardando confirmação de DISARM pelo FCU (armed=1); ignorando waypoint recebido.");
   }
+  // State 4 and drone still armed: signal to caller that this was a landing
+  // state and the command should not be processed yet.
   return true;
 }
 
@@ -856,12 +883,14 @@ void DroneControllerCompleto::waypoints_4d_callback(
   }
 
   if (msg->waypoints.size() == 1) {
-    // Guard: do not start a new takeoff while the drone is still in state 4
-    // (landing / DISARM pending). Mirrors the behaviour of waypoint_goal_callback().
+    // Guard: do not start a new 4D takeoff while the drone is still ARMED in
+    // state 4 (DISARM pending). If the drone is already disarmed,
+    // handle_state4_disarm_reset() performs the reset and returns false so we
+    // fall through and accept the new takeoff command immediately.
     if (handle_state4_disarm_reset()) {
       RCLCPP_WARN(this->get_logger(),
-        "⚠️ [4D TAKEOFF] Ignorado: drone ainda em estado 4 (pouso/DISARM pendente). "
-        "Aguardando reset completo antes de aceitar novo takeoff.");
+        "⚠️ [4D TAKEOFF] Ignorado: drone ainda armado em estado 4 (DISARM pendente). "
+        "Aguardando confirmação de DISARM pelo FCU antes de aceitar novo takeoff.");
       return;
     }
     // Guard: warn if a new takeoff arrives while the drone is already in flight.
@@ -883,6 +912,11 @@ void DroneControllerCompleto::waypoints_4d_callback(
       log_dirty_takeoff_state("4D TAKEOFF");
       reset_after_landing();  // reset completo: flags + IDs + fila de comandos
     }
+
+    // Ensure takeoff_target_z_ is recomputed from current_z_real_ for this
+    // new takeoff cycle (same rationale as handle_single_takeoff_waypoint_command).
+    first_takeoff_cycle_ = true;
+    takeoff_target_z_ = -1.0;
 
     goal_yaw_rad_ = yaws[0];
     using_4d_goal_ = true;
@@ -1371,16 +1405,20 @@ void DroneControllerCompleto::handle_state1_takeoff()
   // the drone ascends.  The drone therefore never reaches its own target and
   // climbs without bound.
   //
-  // FIX: compute the target exactly ONCE per takeoff cycle, detected by the
-  // sentinel value takeoff_target_z_ < 0.0 (set to -1.0 in init_variables() and
-  // reset_after_landing()).  Store the result in takeoff_target_z_ and reuse that
-  // fixed value for every subsequent control cycle until the drone arrives or the
-  // FSM transitions away.  A new takeoff cycle always starts with the sentinel.
-  if (takeoff_target_z_ < 0.0) {
-    // Sentinel detected: latch the target — never recalculate it again during this takeoff.
+  // FIX: compute the target exactly ONCE per takeoff cycle, using the
+  // first_takeoff_cycle_ flag (set to true in init_variables(), reset_after_landing(),
+  // and every takeoff initiator).  Store the result in takeoff_target_z_ and reuse
+  // that fixed value for every subsequent control cycle until the drone arrives or
+  // the FSM transitions away.  A new takeoff cycle always has first_takeoff_cycle_
+  // = true so it recomputes from the current measured altitude (current_z_real_).
+  // The sentinel takeoff_target_z_ < 0.0 serves as a belt-and-suspenders guard.
+  if (first_takeoff_cycle_ || takeoff_target_z_ < 0.0) {
+    // First cycle of this takeoff: latch the target from the current altitude.
+    // Never recalculate it again during this climb to avoid the infinite-ascent bug.
     takeoff_target_z_ = std::max(
       config_.hover_altitude,
       current_z_real_ + config_.takeoff_z_boost);
+    first_takeoff_cycle_ = false;  // latch: do not recalculate for the rest of this cycle
 
     RCLCPP_INFO(this->get_logger(),
       "⬆️ [TAKEOFF BOOST] Z_real=%.2fm | boost=+%.2fm | hover_alt=%.2fm "
@@ -1612,7 +1650,8 @@ void DroneControllerCompleto::reset_after_landing()
   RCLCPP_WARN(this->get_logger(),
     "[RESET] reset_after_landing() chamado — zerando todas as flags e comandos do sistema de pouso.");
 
-  // FSM state
+  // FSM state — must be 0 so the next takeoff command is accepted by
+  // handle_single_takeoff_waypoint_command() / waypoints_callback().
   state_voo_ = 0;
   pouso_em_andamento_ = false;
   controlador_ativo_ = false;
@@ -1620,6 +1659,8 @@ void DroneControllerCompleto::reset_after_landing()
   pouso_start_time_set_ = false;
 
   // OFFBOARD/ARM activation — must be zero so the next takeoff activates fresh
+  // (offboard_activated_ still true would skip the streaming + OFFBOARD steps,
+  //  arm_requested_ still true would skip the ARM step, etc.).
   offboard_activated_ = false;
   offboard_mode_confirmed_ = false;
   arm_requested_ = false;
@@ -1628,11 +1669,21 @@ void DroneControllerCompleto::reset_after_landing()
   // DISARM already completed
   disarm_requested_ = false;
 
-  // Counters and indices
+  // Counters and indices — takeoff_counter_ still > 0 would confuse the
+  // finalize_takeoff_on_altitude_reached() logic; current_waypoint_idx_ still
+  // non-zero would skip waypoints at the start of the next trajectory.
   takeoff_counter_ = 0;
-  // Reset the latched takeoff target so the next cycle starts fresh.
-  // See the takeoff_target_z_ comment in the header for the full rationale.
+
+  // Reset the latched takeoff target so the next cycle recomputes it from
+  // current_z_real_ at the moment of the new takeoff command.  Without this
+  // the drone would target a stale altitude from the previous flight.
   takeoff_target_z_ = -1.0;
+
+  // first_takeoff_cycle_ = true ensures handle_state1_takeoff() will recompute
+  // takeoff_target_z_ exactly once at the beginning of the next climb and then
+  // latch it — preventing both the infinite-ascent bug and the stale-target bug.
+  first_takeoff_cycle_ = true;
+
   current_waypoint_idx_ = 0;
 
   // Waypoints and trajectory
@@ -1640,10 +1691,25 @@ void DroneControllerCompleto::reset_after_landing()
   trajectory_yaws_.clear();
   waypoint_goal_received_ = false;
 
-  // 4D mode flags
+  // 4D mode flags — stale 4D state from a previous flight must not bleed into
+  // the next flight cycle (e.g. using_4d_goal_ true would publish yaw setpoints
+  // when the operator sends a plain 3D takeoff command).
   using_4d_goal_ = false;
   trajectory_4d_mode_ = false;
   at_last_waypoint_yaw_fixed_ = false;
+  // final_waypoint_yaw_ is recalculated when at_last_waypoint_yaw_fixed_ is false,
+  // but reset it to a neutral value to avoid confusing log output between flights.
+  final_waypoint_yaw_ = 0.0;
+
+  // Yaw override — a stale yaw-rate override from the previous flight would
+  // rotate the drone immediately after it lifts off in the next cycle.
+  yaw_override_enabled_ = false;
+  yaw_rate_cmd_ = 0.0;
+
+  // Position hold — a stale hold position from the previous flight (hold_valid_
+  // true) would make the override-active path publish wrong setpoints if
+  // override_active_ is set before the odometry callback updates the hold.
+  hold_valid_ = false;
 
   // Pre-ARM setpoint streaming state
   initial_stream_count_ = 0;
