@@ -48,10 +48,10 @@ private:
     // REPOUSO: 5 SEGUNDOS
     // ==========================================
     RCLCPP_INFO(this->get_logger(), "╔════════════════════════════════════════════════════╗");
-    RCLCPP_INFO(this->get_logger(), "║  ⏳ FASE 2: REPOUSO 10 SEGUNDOS                     ║");
+    RCLCPP_INFO(this->get_logger(), "║  ⏳ FASE 2: REPOUSO 15 SEGUNDOS                     ║");
     RCLCPP_INFO(this->get_logger(), "╚════════════════════════════════════════════════════╝\n");
 
-    for (int i = 10; i > 0; i--) {
+    for (int i = 15; i > 0; i--) {
       RCLCPP_INFO(this->get_logger(), "  ⏳ %d segundo(s) restante(s)...", i);
       std::this_thread::sleep_for(1s);
     }
