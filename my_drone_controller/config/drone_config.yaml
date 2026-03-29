@@ -39,3 +39,9 @@ drone_controller_completo:
 
     # Time to wait after landing is detected before requesting DISARM (seconds)
     landing_timeout: 3.0
+
+    # Timeout waiting for FCU to confirm OFFBOARD mode before sending ARM (seconds).
+    # ARM is only sent after the FCU reports mode == "OFFBOARD"; this parameter
+    # controls how long to wait for that confirmation before retrying OFFBOARD.
+    # Recommended: 5.0 s (PX4 typically confirms within 200 ms when setpoints flow).
+    offboard_confirm_timeout: 5.0

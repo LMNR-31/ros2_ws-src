@@ -140,7 +140,8 @@ private:
   /// Returns true when any flag from the previous flight cycle was not reset.
   bool has_dirty_takeoff_state() const {
     return takeoff_cmd_id_.has_value() || activation_confirmed_ ||
-           offboard_activated_ || disarm_requested_ || pouso_em_andamento_ ||
+           offboard_activated_ || offboard_mode_confirmed_ || arm_requested_ ||
+           disarm_requested_ || pouso_em_andamento_ ||
            trajectory_cmd_id_.has_value() || hover_cmd_id_.has_value() ||
            state_voo_ != 0;
   }
@@ -163,6 +164,17 @@ private:
 
   // State 1 — takeoff layers
   void request_arm_and_offboard_activation();
+  /**
+   * @brief Wait for FCU to confirm OFFBOARD mode after a SET_MODE OFFBOARD request.
+   *
+   * Per PX4/MAVROS best practice, ARM must only be sent AFTER the FCU reports
+   * mode == "OFFBOARD".  Sending ARM and OFFBOARD simultaneously causes the ARM
+   * to be rejected even when the OFFBOARD request succeeds.  This method polls
+   * current_state_.mode and sets offboard_mode_confirmed_ once the FCU confirms
+   * the transition, or resets offboard_activated_ on timeout so the sequence
+   * can be retried cleanly.
+   */
+  void wait_for_offboard_mode();
   bool wait_for_offboard_arm_confirmation();
   void publish_takeoff_climb_setpoint(double target_alt);
   void finalize_takeoff_on_altitude_reached(double target_alt);
@@ -217,6 +229,11 @@ private:
   bool controlador_ativo_;
   bool pouso_em_andamento_;
   bool offboard_activated_;
+  /// True once FCU confirms mode == "OFFBOARD" following a SET_MODE request.
+  /// ARM is sent only after this flag is set, per PX4/MAVROS recommendation.
+  bool offboard_mode_confirmed_;
+  /// True once request_arm() has been called following OFFBOARD confirmation.
+  bool arm_requested_;
   bool activation_confirmed_;
   rclcpp::Time activation_time_;
   int cycle_count_;

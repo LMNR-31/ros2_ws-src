@@ -40,6 +40,10 @@ struct DroneConfig {
   double command_timeout{15.0};
   /// Time to wait after landing is detected before requesting DISARM [s]
   double landing_timeout{3.0};
+  /// Timeout waiting for FCU to confirm OFFBOARD mode before sending ARM [s].
+  /// ARM is only sent once the FCU reports mode == "OFFBOARD"; this parameter
+  /// controls how long we wait for that confirmation before retrying OFFBOARD.
+  double offboard_confirm_timeout{5.0};
 };
 
 }  // namespace drone_control
