@@ -209,8 +209,11 @@ void DroneControllerCompleto::trigger_landing(double z)
 void DroneControllerCompleto::activate_offboard_arm_if_needed()
 {
   if (current_state_.armed && current_state_.mode == "OFFBOARD") {
-    return;  // Já ativo — reutiliza ativação existente
+    RCLCPP_INFO(this->get_logger(),
+      "🔋 Já OFFBOARD+ARM — reutilizando ativação existente para levantamento.");
+    return;
   }
+  RCLCPP_INFO(this->get_logger(), "🔋 Ativando OFFBOARD+ARM para levantamento...");
   offboard_activated_ = false;
   activation_confirmed_ = false;
   request_offboard();
@@ -469,7 +472,7 @@ void DroneControllerCompleto::handle_single_takeoff_waypoint_command(
   controlador_ativo_ = false;
   trajectory_started_ = false;
   trajectory_waypoints_.clear();
-  trajectory_yaws_.clear();
+  trajectory_yaws_.clear();  // cleared defensively to avoid stale 4D yaws if mode changes
   current_waypoint_idx_ = 0;
 
   activate_offboard_arm_if_needed();
