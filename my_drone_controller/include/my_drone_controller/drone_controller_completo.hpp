@@ -313,27 +313,24 @@ private:
   bool override_active_{false};
 
   // ── Takeoff target altitude (latched) ────────────────────────────────────
-  /// Fixed Z target computed ONCE at the start of each takeoff cycle.
+  /// Fixed takeoff target altitude (metres) for the current climb.
   ///
-  /// Bug (infinite ascent): if target_altitude is recalculated every control
-  /// cycle as std::max(hover_altitude, current_z_real_ + boost), the target
-  /// rises together with the drone because current_z_real_ keeps increasing.
-  /// The drone never reaches its own target and climbs without bound.
+  /// Computed ONCE at takeoff-command-receive time (in
+  /// handle_single_takeoff_waypoint_command() and the 4D equivalent) as:
+  ///   takeoff_target_z_ = std::max(hover_altitude, current_z_real_ + takeoff_z_boost)
   ///
-  /// Fix: compute and latch the value once (when first_takeoff_cycle_ is true),
-  /// then publish it unchanged until the drone arrives at that altitude.
-  /// Reset to -1.0 (sentinel) and set first_takeoff_cycle_ = true when
-  /// entering a new takeoff or after landing so the next cycle recomputes the
-  /// target from the current measured altitude (current_z_real_).
+  /// There is NO artificial differentiation between the first takeoff and any
+  /// subsequent cycle — the same formula always runs from the actual ground
+  /// altitude measured at the moment the command arrives.  Publishing a fixed
+  /// value (not recomputed each 10 ms cycle) is what prevents the
+  /// infinite-ascent bug: if the target tracked current_z_real_ every cycle
+  /// it would rise together with the drone and never be reached.
+  ///
+  /// Reset to -1.0 (sentinel) in reset_after_landing() and init_variables().
+  /// A value of -1.0 at the start of handle_state1_takeoff() indicates an
+  /// unexpected path (should never happen in normal operation) and triggers a
+  /// safe fallback computation there.
   double takeoff_target_z_{-1.0};
-
-  /// True at the very start of each takeoff cycle (reset in reset_after_landing()
-  /// and in every takeoff initiator).  handle_state1_takeoff() uses this flag to
-  /// compute takeoff_target_z_ exactly ONCE from current_z_real_, then clears the
-  /// flag so the latched target is reused for the remainder of the climb.
-  /// Without this guard the target would be recalculated every 10 ms and would
-  /// track the rising drone → infinite ascent / PX4 auto-disarm.
-  bool first_takeoff_cycle_{true};
 
   // ── Pre-ARM setpoint streaming counters ──────────────────────────────────
   /// Number of setpoints published so far in the current pre-ARM stream phase.
