@@ -1768,15 +1768,15 @@ void DroneControllerCompleto::complete_landing()
   pouso_em_andamento_ = false;
   pouso_start_time_set_ = false;
 
-  if (current_state_.armed) {
-    RCLCPP_WARN(this->get_logger(), "🔌 Solicitando DISARM...");
-    request_disarm();
-  } else {
-    RCLCPP_WARN(this->get_logger(),
-      "[DISARM] Drone já está desarmado — reset imediato sem enviar DISARM ao FCU.");
-    disarm_requested_ = false;
-    reset_after_landing();
-  }
+  // if (current_state_.armed) {
+  //   RCLCPP_WARN(this->get_logger(), "🔌 Solicitando DISARM...");
+  //   request_disarm();
+  // } else {
+  //   RCLCPP_WARN(this->get_logger(),
+  //     "[DISARM] Drone já está desarmado — reset imediato sem enviar DISARM ao FCU.");
+  //   disarm_requested_ = false;
+  //   reset_after_landing();
+  // }
 }
 
 void DroneControllerCompleto::handle_state4_landing()

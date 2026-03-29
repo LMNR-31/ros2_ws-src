@@ -53,7 +53,7 @@ private:
 
     // Após publicação, aguarda 3s para verificar se subiu
     auto now = this->now();
-    if ((now - attempt_start_).seconds() < 3.0) {
+    if ((now - attempt_start_).seconds() < 7.0) {
       return;
     }
 
