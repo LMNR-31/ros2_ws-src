@@ -30,6 +30,17 @@ drone_controller_completo:
     # Z value below which the drone is considered to be landing (metres)
     land_z_threshold: 0.1
 
+    # ── Takeoff Z boost ──────────────────────────────────────────────────
+    # Minimum Z increment (metres) added to the current odometry altitude when
+    # computing the takeoff setpoint immediately after arming.
+    #
+    # After ARM is accepted in OFFBOARD mode, PX4 starts an auto-disarm timer
+    # if no upward movement is detected.  The effective takeoff target is:
+    #   target_z = max(hover_altitude, current_z_real + takeoff_z_boost)
+    # This guarantees the FCU sees a clear climb intent and does not disarm.
+    # Recommended: 0.7 m (at least 0.5 m above ground to trigger PX4 movement detection).
+    takeoff_z_boost: 0.7
+
     # ── Timeouts ─────────────────────────────────────────────────────────
     # Timeout waiting for OFFBOARD + ARM confirmation from FCU (seconds)
     activation_timeout: 3.0
