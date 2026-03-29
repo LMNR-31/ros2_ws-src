@@ -69,6 +69,11 @@ public:
   // Position only; ignore velocity, acceleration, yaw angle and yaw_rate
   static constexpr uint16_t MASK_POS_ONLY = MASK_POS_YAWRATE | IGNORE_YAW_RATE;
 
+  /// Minimum number of setpoints to publish before requesting ARM+OFFBOARD.
+  /// At 100 Hz this equates to ~200 ms of continuous streaming, which is
+  /// enough for the PX4 FCU to accept the ARM command in OFFBOARD mode.
+  static constexpr int INITIAL_STREAM_THRESHOLD = 20;
+
   DroneControllerCompleto();
 
 private:
@@ -82,6 +87,20 @@ private:
   // ── Landing / activation helpers ────────────────────────────────────────
   void trigger_landing(double z);
   void activate_offboard_arm_if_needed();
+
+  // ── Pre-ARM setpoint streaming ───────────────────────────────────────────
+  /**
+   * @brief Stream initial position setpoints before requesting ARM+OFFBOARD.
+   *
+   * PX4/MAVROS will reject an ARM command in OFFBOARD mode unless the FCU
+   * has been receiving a continuous stream of setpoints on the
+   * setpoint_raw/local topic BEFORE and DURING the ARM/OFFBOARD request.
+   * This method publishes INITIAL_STREAM_THRESHOLD setpoints (≥20) at the
+   * target hover position so that the FCU accepts the subsequent ARM command.
+   *
+   * Call from handle_state1_takeoff() before request_arm_and_offboard_activation().
+   */
+  void stream_initial_setpoints();
 
   // ── Parameter handlers ───────────────────────────────────────────────────
   bool apply_enabled_param(const rclcpp::Parameter & p,
@@ -250,6 +269,13 @@ private:
   // ── Control flags ────────────────────────────────────────────────────────
   bool enabled_{true};
   bool override_active_{false};
+
+  // ── Pre-ARM setpoint streaming counters ──────────────────────────────────
+  /// Number of setpoints published so far in the current pre-ARM stream phase.
+  int initial_stream_count_{0};
+  /// True once INITIAL_STREAM_THRESHOLD setpoints have been published and
+  /// ARM+OFFBOARD can safely be requested from the FSM.
+  bool initial_stream_done_{false};
 
   // ── Thread safety ────────────────────────────────────────────────────────
   std::mutex mutex_;

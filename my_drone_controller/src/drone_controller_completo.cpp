@@ -192,6 +192,8 @@ void DroneControllerCompleto::init_variables()
   goal_yaw_rad_ = 0.0;
   using_4d_goal_ = false;
   trajectory_4d_mode_ = false;
+  initial_stream_count_ = 0;
+  initial_stream_done_ = false;
 }
 
 // ============================================================
@@ -211,15 +213,22 @@ void DroneControllerCompleto::activate_offboard_arm_if_needed()
   if (current_state_.armed && current_state_.mode == "OFFBOARD") {
     RCLCPP_INFO(this->get_logger(),
       "🔋 Já OFFBOARD+ARM — reutilizando ativação existente para levantamento.");
+    // Skip the streaming phase: the FCU is already receiving setpoints
+    // and ARM is already confirmed.
+    initial_stream_done_ = true;
     return;
   }
-  RCLCPP_INFO(this->get_logger(), "🔋 Ativando OFFBOARD+ARM para levantamento...");
+  // Reset activation flags so handle_state1_takeoff() re-runs the full
+  // streaming → OFFBOARD → ARM sequence for this new takeoff attempt.
+  RCLCPP_INFO(this->get_logger(),
+    "🔋 Preparando streaming inicial de setpoints para OFFBOARD+ARM...");
   offboard_activated_ = false;
   activation_confirmed_ = false;
-  request_offboard();
-  request_arm();
-  offboard_activated_ = true;
-  activation_time_ = this->now();
+  initial_stream_count_ = 0;
+  initial_stream_done_ = false;
+  // ARM and OFFBOARD are NOT requested here.  They will be triggered by
+  // handle_state1_takeoff() only after stream_initial_setpoints() has
+  // published INITIAL_STREAM_THRESHOLD setpoints to satisfy the PX4 FCU.
 }
 
 // ============================================================
@@ -1037,6 +1046,48 @@ void DroneControllerCompleto::request_arm_and_offboard_activation()
   activation_time_ = this->now();
 }
 
+// ============================================================
+// PRE-ARM SETPOINT STREAMING
+// ============================================================
+
+void DroneControllerCompleto::stream_initial_setpoints()
+{
+  // PX4/MAVROS requires a continuous stream of position setpoints to be
+  // published on /uav1/mavros/setpoint_raw/local BEFORE the FCU will accept
+  // an ARM command in OFFBOARD mode.  Without this pre-stream the FCU replies
+  // "ARM rejected" immediately even though it successfully enters OFFBOARD.
+  //
+  // We publish INITIAL_STREAM_THRESHOLD setpoints (~200 ms at 100 Hz) at the
+  // target takeoff position before triggering the OFFBOARD+ARM sequence.
+  // After this point the control-loop timer keeps setpoints flowing, so ARM
+  // will not be rejected on subsequent retry attempts either.
+  //
+  // Invariant: last_waypoint_goal_ is always set before state_voo_ is moved
+  // to 1 (see handle_single_takeoff_waypoint_command / waypoints_4d_callback),
+  // and init_variables() initialises it to (0, 0, hover_altitude) as a safe
+  // fallback, so the published position is always well-defined.
+  publishPositionTarget(
+    last_waypoint_goal_.pose.position.x,
+    last_waypoint_goal_.pose.position.y,
+    last_waypoint_goal_.pose.position.z,
+    0.0, MASK_POS_ONLY);
+
+  initial_stream_count_++;
+
+  if (initial_stream_count_ == 1) {
+    RCLCPP_INFO(this->get_logger(),
+      "📡 [STREAM] Iniciando streaming inicial de setpoints antes de ARM+OFFBOARD "
+      "(meta: %d mensagens)...", INITIAL_STREAM_THRESHOLD);
+  }
+
+  if (initial_stream_count_ >= INITIAL_STREAM_THRESHOLD) {
+    initial_stream_done_ = true;
+    RCLCPP_INFO(this->get_logger(),
+      "✅ [STREAM] Streaming inicial concluído (%d setpoints publicados). "
+      "Prosseguindo com solicitação de OFFBOARD+ARM.", initial_stream_count_);
+  }
+}
+
 bool DroneControllerCompleto::wait_for_offboard_arm_confirmation()
 {
   if (current_state_.armed && current_state_.mode == "OFFBOARD") {
@@ -1132,6 +1183,15 @@ void DroneControllerCompleto::finalize_takeoff_on_altitude_reached(double target
 
 void DroneControllerCompleto::handle_state1_takeoff()
 {
+  // Step 1 — Pre-ARM streaming: publish setpoints before requesting OFFBOARD+ARM.
+  // PX4 rejects ARM in OFFBOARD mode when no setpoints have been streamed yet.
+  // stream_initial_setpoints() accumulates INITIAL_STREAM_THRESHOLD messages
+  // (~200 ms at 100 Hz) and sets initial_stream_done_ when the threshold is met.
+  if (!initial_stream_done_) {
+    stream_initial_setpoints();
+    return;
+  }
+
   if (!offboard_activated_) {
     request_arm_and_offboard_activation();
     return;
@@ -1389,6 +1449,10 @@ void DroneControllerCompleto::reset_after_landing()
   using_4d_goal_ = false;
   trajectory_4d_mode_ = false;
   at_last_waypoint_yaw_fixed_ = false;
+
+  // Pre-ARM setpoint streaming state
+  initial_stream_count_ = 0;
+  initial_stream_done_ = false;
 
   // Cancel pending commands and reset all command IDs.
   // cancel_all_pending() marks leftover queue entries as FAILED so they don't
