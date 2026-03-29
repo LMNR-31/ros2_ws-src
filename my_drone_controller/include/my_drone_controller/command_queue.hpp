@@ -119,11 +119,10 @@ public:
   /**
    * @brief Cancel all pending commands, moving them to FAILED in the history.
    *
-   * Called during reset_after_landing() to flush stale pending entries left
-   * from the previous flight cycle (e.g. trajectory that was interrupted mid-
-   * flight). Without this cleanup, check_timeouts() would later mark those
-   * entries as TIMEOUT, producing confusing log noise and (in theory) a spurious
-   * timeout callback for a command ID that the controller no longer tracks.
+   * Flushes stale pending entries left from the previous flight cycle
+   * (e.g. trajectory that was interrupted mid-flight). Without this cleanup,
+   * check_timeouts() would later mark those entries as TIMEOUT, producing
+   * confusing log noise.
    *
    * Implemented as "mark FAILED + move to history" so that the full audit trail
    * is preserved in the log file while the pending_ map starts clean.

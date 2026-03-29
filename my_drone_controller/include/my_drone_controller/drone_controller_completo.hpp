@@ -34,15 +34,15 @@ namespace drone_control {
  *  - State 1: Takeoff (OFFBOARD + ARM, climb to hover_altitude)
  *  - State 2: Hover (waiting for trajectory)
  *  - State 3: Executing trajectory
- *  - State 4: Landing — waits for ground detection, then DISARMs and resets
+ *  - State 4: Landing — waits for ground detection, then DISARMs and transitions
  *              to State 0 to accept a new takeoff command.
  *
  * All drone commands are registered in a CommandQueue so that every
  * operation can be audited and timed out automatically.
  *
  * There is a single universal landing flow: after landing is detected the
- * drone always proceeds to DISARM; once the FCU confirms DISARM all flags
- * are reset and the system returns to State 0, ready for the next takeoff.
+ * drone always proceeds to DISARM; once the FCU confirms DISARM the FSM
+ * transitions to State 0, ready for the next takeoff.
  * There are no landing modes (Modo A / Modo B) — only this single flow.
  */
 class DroneControllerCompleto : public rclcpp::Node
@@ -155,21 +155,10 @@ private:
   // ── Shared waypoint-goal helpers ─────────────────────────────────────────
   bool check_landing_in_flight(double z);
   bool handle_state4_disarm_reset();
-  /// Logs a WARN with all relevant dirty-state flags; call before reset_after_landing().
-  void log_dirty_takeoff_state(const char * context);
   /// Logs a DEBUG snapshot of the key FSM flags; call before/after takeoff setup.
   void log_takeoff_debug_flags(const char * tag);
   /// Returns true when the FSM is actively in flight (states 1–3).
   bool is_in_flight() const { return state_voo_ == 1 || state_voo_ == 2 || state_voo_ == 3; }
-  /// Returns true when any flag from the previous flight cycle was not reset.
-  bool has_dirty_takeoff_state() const {
-    return takeoff_cmd_id_.has_value() || activation_confirmed_ ||
-           offboard_activated_ || offboard_mode_confirmed_ || arm_requested_ ||
-           disarm_requested_ || pouso_em_andamento_ ||
-           trajectory_cmd_id_.has_value() || hover_cmd_id_.has_value() ||
-           post_offboard_stream_done_ ||
-           state_voo_ != 0;
-  }
 
   // ── Waypoint-goal callbacks ──────────────────────────────────────────────
   void waypoint_goal_callback(const geometry_msgs::msg::PoseStamped::SharedPtr msg);
@@ -218,7 +207,6 @@ private:
   void handle_state3_trajectory();
 
   // State 4 — landing completers
-  void reset_after_landing();
   void complete_landing();
   void handle_state4_landing();
 
@@ -326,7 +314,6 @@ private:
   /// infinite-ascent bug: if the target tracked current_z_real_ every cycle
   /// it would rise together with the drone and never be reached.
   ///
-  /// Reset to -1.0 (sentinel) in reset_after_landing() and init_variables().
   /// A value of -1.0 at the start of handle_state1_takeoff() indicates an
   /// unexpected path (should never happen in normal operation) and triggers a
   /// safe fallback computation there.
