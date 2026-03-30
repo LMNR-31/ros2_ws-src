@@ -97,9 +97,11 @@ void DroneControllerCompleto::setup_publishers()
     "/uav1/mavros/setpoint_raw/local", 10);
   trajectory_finished_pub_ = this->create_publisher<std_msgs::msg::Bool>("/trajectory_finished", 10);
   progress_publisher_ = this->create_publisher<std_msgs::msg::Float32>("/trajectory_progress", 10);
+  waypoint_reached_pub_ = this->create_publisher<std_msgs::msg::Int32>("/waypoint_reached", 10);
   RCLCPP_INFO(this->get_logger(), "✓ Publisher criado: /uav1/mavros/setpoint_raw/local");
   RCLCPP_INFO(this->get_logger(), "✓ Publisher criado: /trajectory_finished");
   RCLCPP_INFO(this->get_logger(), "✓ Publisher criado: /trajectory_progress");
+  RCLCPP_INFO(this->get_logger(), "✓ Publisher criado: /waypoint_reached");
 }
 
 void DroneControllerCompleto::setup_subscribers()
@@ -187,6 +189,7 @@ void DroneControllerCompleto::init_variables()
   trajectory_started_ = false;
   current_waypoint_idx_ = 0;
   waypoint_duration_ = config_.waypoint_duration;
+  last_waypoint_reached_idx_ = -1;
   current_z_real_ = 0.0;
   current_x_ned_ = 0.0;
   current_y_ned_ = 0.0;
@@ -642,6 +645,7 @@ void DroneControllerCompleto::waypoints_callback(
     trajectory_yaws_.clear();
     current_waypoint_idx_ = 0;
     trajectory_started_ = false;
+    last_waypoint_reached_idx_ = -1;
     last_waypoint_goal_.pose = msg->poses[0];
 
     log_trajectory_waypoints_3d(trajectory_waypoints_);
@@ -941,6 +945,7 @@ void DroneControllerCompleto::waypoints_4d_callback(
   using_4d_goal_ = false;
   current_waypoint_idx_ = 0;
   trajectory_started_ = false;
+  last_waypoint_reached_idx_ = -1;
 
   geometry_msgs::msg::PoseStamped ps;
   ps.pose = poses[0];
@@ -1648,6 +1653,28 @@ void DroneControllerCompleto::handle_state3_trajectory()
 
   publish_trajectory_waypoint_setpoint(current_waypoint_idx_);
   log_trajectory_progress(current_waypoint_idx_, elapsed_time);
+
+  // Detect waypoint reach by position and publish /waypoint_reached (once per index).
+  {
+    constexpr double XY_TOL = 0.10;  // radial XY tolerance [m]
+    constexpr double Z_TOL  = 0.15;  // absolute Z tolerance [m]
+    const auto & wp = trajectory_waypoints_[current_waypoint_idx_];
+    double dx = wp.position.x - current_x_ned_;
+    double dy = wp.position.y - current_y_ned_;
+    double dz = std::abs(wp.position.z - current_z_real_);
+    double dist_xy = std::sqrt(dx * dx + dy * dy);
+    if (dist_xy <= XY_TOL && dz <= Z_TOL &&
+        current_waypoint_idx_ != last_waypoint_reached_idx_)
+    {
+      last_waypoint_reached_idx_ = current_waypoint_idx_;
+      std_msgs::msg::Int32 reached_msg;
+      reached_msg.data = current_waypoint_idx_;
+      waypoint_reached_pub_->publish(reached_msg);
+      RCLCPP_INFO(this->get_logger(),
+        "📍 Waypoint %d atingido (dist_xy=%.3fm, dz=%.3fm) → /waypoint_reached",
+        current_waypoint_idx_, dist_xy, dz);
+    }
+  }
 
   double total_time = waypoint_duration_ * (double)trajectory_waypoints_.size();
   finalize_trajectory_if_complete(elapsed_time, total_time);

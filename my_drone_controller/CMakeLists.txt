@@ -11,6 +11,7 @@ find_package(rclcpp REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(mavros_msgs REQUIRED)
 find_package(rcl_interfaces REQUIRED)
 find_package(drone_control REQUIRED)
@@ -43,6 +44,7 @@ ament_target_dependencies(drone_node
   nav_msgs
   geometry_msgs
   sensor_msgs
+  std_msgs
   mavros_msgs
   rcl_interfaces
   drone_control
