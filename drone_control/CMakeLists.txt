@@ -59,7 +59,7 @@ install(TARGETS drone_soft_land
 )
 add_executable(mission_manager src/mission_manager.cpp)
 
-ament_target_dependencies(mission_manager rclcpp)
+ament_target_dependencies(mission_manager rclcpp mavros_msgs)
 
 install(TARGETS
   mission_manager

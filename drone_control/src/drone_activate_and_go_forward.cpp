@@ -11,7 +11,7 @@ class TakeoffWaypointPublisher : public rclcpp::Node
 {
 public:
   TakeoffWaypointPublisher() : Node("takeoff_waypoint_publisher") {
-    waypoints_pub_ = this->create_publisher<geometry_msgs::msg::PoseArray>("/waypoints", 10);
+    waypoints_pub_ = this->create_publisher<geometry_msgs::msg::PoseArray>("/mission_waypoints", 10);
     odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
       "/uav1/mavros/local_position/odom", 10,
       std::bind(&TakeoffWaypointPublisher::odomCallback, this, _1));
