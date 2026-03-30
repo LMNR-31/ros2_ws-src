@@ -134,6 +134,14 @@ add_executable(supervisor src/supervisor.cpp)
 ament_target_dependencies(supervisor rclcpp std_msgs)
 install(TARGETS supervisor DESTINATION lib/${PROJECT_NAME})
 
+add_executable(takeoff_waypoint_publisher_8s src/takeoff_waypoint_publisher_8s.cpp)
+ament_target_dependencies(takeoff_waypoint_publisher_8s
+  rclcpp
+  geometry_msgs
+  nav_msgs
+)
+install(TARGETS takeoff_waypoint_publisher_8s DESTINATION lib/${PROJECT_NAME})
+
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   # the following line skips the linter which checks for copyrights
