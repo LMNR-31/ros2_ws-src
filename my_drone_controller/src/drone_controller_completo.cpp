@@ -207,6 +207,7 @@ void DroneControllerCompleto::init_variables()
   initial_stream_done_ = false;
   post_offboard_stream_count_ = 0;
   post_offboard_stream_done_ = false;
+  setpoint_pub_time_initialized_ = false;
 }
 
 // ============================================================
@@ -977,6 +978,9 @@ void DroneControllerCompleto::publishPositionTarget(
   pt.position.z = static_cast<float>(z);
   pt.yaw_rate = static_cast<float>(yaw_rate);
   raw_pub_->publish(pt);
+  // Watchdog: record time of last real publish
+  last_setpoint_pub_time_ = pt.header.stamp;
+  setpoint_pub_time_initialized_ = true;
 }
 
 void DroneControllerCompleto::publishPositionTargetWithYaw(
@@ -992,6 +996,23 @@ void DroneControllerCompleto::publishPositionTargetWithYaw(
   pt.position.z = static_cast<float>(z);
   pt.yaw = static_cast<float>(yaw_rad);
   raw_pub_->publish(pt);
+  // Watchdog: record time of last real publish
+  last_setpoint_pub_time_ = pt.header.stamp;
+  setpoint_pub_time_initialized_ = true;
+}
+
+// ============================================================
+// WATCHDOG HOLD SETPOINT
+// ============================================================
+
+void DroneControllerCompleto::publish_hold_setpoint()
+{
+  // Use captured hold position if valid; otherwise fall back to current odometry.
+  if (hold_valid_) {
+    publishPositionTarget(hold_x_ned_, hold_y_ned_, hold_z_ned_, 0.0, MASK_POS_ONLY);
+  } else {
+    publishPositionTarget(current_x_ned_, current_y_ned_, current_z_ned_, 0.0, MASK_POS_ONLY);
+  }
 }
 
 // ============================================================
@@ -1004,9 +1025,24 @@ void DroneControllerCompleto::control_loop()
 
   cycle_count_++;
 
+  const auto now = this->now();
+
+  // Initialize watchdog timestamp on first iteration so it doesn't fire immediately.
+  if (!setpoint_pub_time_initialized_) {
+    last_setpoint_pub_time_ = now;
+    setpoint_pub_time_initialized_ = true;
+  }
+
   if (!enabled_) {
+    // FSM is paused, but we must keep the MAVROS setpoint stream alive (≥20 Hz)
+    // to prevent PX4 from dropping OFFBOARD mode.
+    if ((now - last_setpoint_pub_time_).seconds() >= MAX_SETPOINT_SILENCE_S) {
+      publish_hold_setpoint();
+      RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+        "⏱️ Watchdog: enabled=false, publicando hold setpoint (>=20 Hz)");
+    }
     RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
-      "🚫 Controller desabilitado (enabled=false): setpoints pausados");
+      "🚫 Controller desabilitado (enabled=false): FSM pausada, mantendo stream mínimo (>=20Hz)");
     return;
   }
 

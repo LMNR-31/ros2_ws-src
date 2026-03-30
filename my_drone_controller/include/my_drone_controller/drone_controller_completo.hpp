@@ -69,6 +69,11 @@ public:
   // Position only; ignore velocity, acceleration, yaw angle and yaw_rate
   static constexpr uint16_t MASK_POS_ONLY = MASK_POS_YAWRATE | IGNORE_YAW_RATE;
 
+  /// Watchdog: minimum guaranteed setpoint publish rate (Hz).
+  static constexpr double MIN_SETPOINT_RATE_HZ = 20.0;
+  /// Watchdog: maximum allowed silence between setpoint publishes (0.05 s = 1 / 20 Hz).
+  static constexpr double MAX_SETPOINT_SILENCE_S = 1.0 / MIN_SETPOINT_RATE_HZ;
+
   /// Minimum number of setpoints to publish before requesting ARM+OFFBOARD.
   /// At 100 Hz this equates to ~200 ms of continuous streaming, which is
   /// enough for the PX4 FCU to accept the ARM command in OFFBOARD mode.
@@ -169,6 +174,8 @@ private:
   void publishPositionTarget(double x, double y, double z,
                              double yaw_rate, uint16_t type_mask);
   void publishPositionTargetWithYaw(double x, double y, double z, double yaw_rad);
+  /// Publish a hold setpoint using hold_* if valid, otherwise current_*_ned_.
+  void publish_hold_setpoint();
 
   // ── Main control loop ────────────────────────────────────────────────────
   void control_loop();
@@ -336,6 +343,10 @@ private:
 
   // ── Thread safety ────────────────────────────────────────────────────────
   std::mutex mutex_;
+
+  // ── Watchdog: tracks last real setpoint publish time ─────────────────────
+  rclcpp::Time last_setpoint_pub_time_;
+  bool setpoint_pub_time_initialized_{false};
 
   // ── Parameter callback handle ────────────────────────────────────────────
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_cb_handle_;
