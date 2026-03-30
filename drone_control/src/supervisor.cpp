@@ -18,6 +18,9 @@ public:
       mission_manager_pid_(-1),
       trajectory_done_queued_(false)
     {
+        this->declare_parameter<int>("min_waypoint_idx_to_trigger", 1);
+        min_waypoint_idx_to_trigger_ = this->get_parameter("min_waypoint_idx_to_trigger").as_int();
+
         progress_sub_ = this->create_subscription<std_msgs::msg::Float32>(
             "/trajectory_progress", 10,
             std::bind(&SupervisorNode::progress_callback, this, std::placeholders::_1));
@@ -34,16 +37,19 @@ public:
             std::bind(&SupervisorNode::process_queue, this));
 
         RCLCPP_INFO(this->get_logger(),
-            "Supervisor node started! (monitorando /waypoint_reached, /trajectory_progress, /trajectory_finished)");
+            "Supervisor node started! (monitorando /waypoint_reached, /trajectory_progress, /trajectory_finished) | min_waypoint_idx_to_trigger=%d",
+            min_waypoint_idx_to_trigger_);
     }
 
 private:
     // ── Called on each /waypoint_reached message ───────────────────────────
     void waypoint_reached_callback(const std_msgs::msg::Int32::SharedPtr msg) {
         int wp = msg->data;
-        if (wp == 0) {
-            RCLCPP_INFO(this->get_logger(), "Waypoint 0 atingido — mission_manager não é executado no primeiro waypoint.");
-            return;  // skip WP 0: no landing/takeoff cycle on the very first waypoint
+        if (wp < min_waypoint_idx_to_trigger_) {
+            RCLCPP_INFO(this->get_logger(),
+                "Waypoint %d ignorado — mission_manager só é executado a partir do waypoint %d.",
+                wp, min_waypoint_idx_to_trigger_);
+            return;  // skip waypoints below threshold: no landing/takeoff cycle
         }
         if (wp == last_launched_waypoint_idx_) {
             return;  // already enqueued for this index
@@ -132,6 +138,7 @@ private:
     rclcpp::TimerBase::SharedPtr queue_timer_;
 
     int last_launched_waypoint_idx_;
+    int min_waypoint_idx_to_trigger_;
     pid_t mission_manager_pid_;
     bool trajectory_done_queued_;
     std::queue<int> pending_queue_;

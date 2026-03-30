@@ -1831,11 +1831,22 @@ void DroneControllerCompleto::handle_state3_trajectory()
       // Check whether the trajectory is now complete.
       if (current_waypoint_idx_ >= static_cast<int>(trajectory_waypoints_.size())) {
         finalize_trajectory_complete();
-        // Still set mission_interrupt_active_ so mission_manager runs its
-        // land/disarm/rearm/takeoff cycle for the last waypoint too.
-        mission_interrupt_active_ = true;
-        mission_waypoints_.clear();
-        mission_wp_follow_idx_ = 0;
+        // WP0 guard: skip mission interrupt for the first waypoint even at end-of-trajectory.
+        if (last_waypoint_reached_idx_ > 0) {
+          // Still set mission_interrupt_active_ so mission_manager runs its
+          // land/disarm/rearm/takeoff cycle for the last waypoint too.
+          mission_interrupt_active_ = true;
+          mission_waypoints_.clear();
+          mission_wp_follow_idx_ = 0;
+        }
+        return;
+      }
+
+      // WP0 guard: do not enter mission interrupt mode on the first waypoint.
+      // Advance directly to WP1 and continue the main trajectory normally.
+      if (last_waypoint_reached_idx_ == 0) {
+        RCLCPP_INFO(this->get_logger(),
+          "🔄 WP0 atingido — avançando para WP1 sem interrupção de missão.");
         return;
       }
 
