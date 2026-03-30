@@ -12,6 +12,7 @@
 #include "rcl_interfaces/msg/set_parameters_result.hpp"
 #include "std_msgs/msg/bool.hpp"
 #include "std_msgs/msg/float32.hpp"
+#include "std_msgs/msg/int32.hpp"
 #include "drone_control/msg/yaw_override.hpp"
 #include "drone_control/msg/waypoint4_d.hpp"
 #include "drone_control/msg/waypoint4_d_array.hpp"
@@ -224,6 +225,7 @@ private:
   rclcpp::Publisher<mavros_msgs::msg::PositionTarget>::SharedPtr raw_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr trajectory_finished_pub_;
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr progress_publisher_;
+  rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr waypoint_reached_pub_;
 
   // ── Subscribers ──────────────────────────────────────────────────────────
   rclcpp::Subscription<mavros_msgs::msg::State>::SharedPtr state_sub_;
@@ -277,6 +279,9 @@ private:
   bool trajectory_started_;
   int current_waypoint_idx_;
   double waypoint_duration_;
+  /// Last waypoint index for which /waypoint_reached was published (debounce).
+  /// -1 means no waypoint has been published yet for the current trajectory.
+  int last_waypoint_reached_idx_;
 
   // ── Odometry (NED) ───────────────────────────────────────────────────────
   double current_z_real_;
