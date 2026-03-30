@@ -157,6 +157,7 @@ private:
 
   // ── Waypoint callbacks ───────────────────────────────────────────────────
   void waypoints_callback(const geometry_msgs::msg::PoseArray::SharedPtr msg);
+  void mission_waypoints_callback(const geometry_msgs::msg::PoseArray::SharedPtr msg);
 
   // ── Shared waypoint-goal helpers ─────────────────────────────────────────
   bool check_landing_in_flight(double z);
@@ -210,8 +211,9 @@ private:
   bool initialize_trajectory();
   double compute_yaw_for_trajectory_waypoint(int idx, bool at_last_wp);
   void publish_trajectory_waypoint_setpoint(int idx);
-  void log_trajectory_progress(int idx, double elapsed_time);
-  void finalize_trajectory_if_complete(double elapsed_time, double total_time);
+  void log_trajectory_progress(int idx);
+  void finalize_trajectory_complete();
+  void handle_mission_interrupt_in_state3();
   void handle_state3_trajectory();
 
   // State 4 — landing completers
@@ -230,6 +232,7 @@ private:
   // ── Subscribers ──────────────────────────────────────────────────────────
   rclcpp::Subscription<mavros_msgs::msg::State>::SharedPtr state_sub_;
   rclcpp::Subscription<geometry_msgs::msg::PoseArray>::SharedPtr waypoints_sub_;
+  rclcpp::Subscription<geometry_msgs::msg::PoseArray>::SharedPtr mission_waypoints_sub_;
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr waypoint_goal_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
   rclcpp::Subscription<drone_control::msg::YawOverride>::SharedPtr yaw_override_sub_;
@@ -282,6 +285,15 @@ private:
   /// Last waypoint index for which /waypoint_reached was published (debounce).
   /// -1 means no waypoint has been published yet for the current trajectory.
   int last_waypoint_reached_idx_;
+
+  // ── Mission interrupt state (per-waypoint land/disarm/rearm/takeoff cycle) ──
+  /// True while a per-waypoint mission cycle is in progress.
+  bool mission_interrupt_active_{false};
+  /// Current index into mission_waypoints_ being followed.
+  int mission_wp_follow_idx_{0};
+  /// Waypoints for the current mission cycle (landing or takeoff), received
+  /// on /mission_waypoints.  Cleared at the start of each interrupt cycle.
+  std::vector<geometry_msgs::msg::Pose> mission_waypoints_;
 
   // ── Odometry (NED) ───────────────────────────────────────────────────────
   double current_z_real_;

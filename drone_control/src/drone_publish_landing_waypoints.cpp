@@ -13,7 +13,7 @@ class DronePublishLandingWaypoints : public rclcpp::Node
 public:
   DronePublishLandingWaypoints() : Node("drone_publish_landing_waypoints")
   {
-    waypoints_pub_ = this->create_publisher<geometry_msgs::msg::PoseArray>("/waypoints", 10);
+    waypoints_pub_ = this->create_publisher<geometry_msgs::msg::PoseArray>("/mission_waypoints", 10);
 
     pose_sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
       "/uav1/mavros/local_position/pose", 10,
