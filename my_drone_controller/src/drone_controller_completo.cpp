@@ -201,7 +201,7 @@ void DroneControllerCompleto::init_variables()
   current_waypoint_idx_ = 0;
   waypoint_duration_ = config_.waypoint_duration;
   last_waypoint_reached_idx_ = -1;
-  mission_interrupt_active_ = false;
+  mission_cycle_phase_ = MissionCyclePhase::NONE;
   mission_wp_follow_idx_ = 0;
   mission_waypoints_.clear();
   current_z_real_ = 0.0;
@@ -662,7 +662,7 @@ void DroneControllerCompleto::waypoints_callback(
     last_waypoint_reached_idx_ = -1;
     last_waypoint_goal_.pose = msg->poses[0];
     // Cancel any ongoing mission interrupt: new external trajectory replaces it.
-    mission_interrupt_active_ = false;
+    mission_cycle_phase_ = MissionCyclePhase::NONE;
     mission_waypoints_.clear();
     mission_wp_follow_idx_ = 0;
 
@@ -677,6 +677,23 @@ void DroneControllerCompleto::waypoints_callback(
     }
 
     activate_trajectory_in_hover(msg->poses.size());
+  }
+}
+
+// ============================================================
+// MISSION CYCLE PHASE HELPERS
+// ============================================================
+
+/// Returns a human-readable name for each MissionCyclePhase value.
+static const char * mission_cycle_phase_name(MissionCyclePhase p)
+{
+  switch (p) {
+    case MissionCyclePhase::NONE:            return "NONE";
+    case MissionCyclePhase::WAIT_LAND_WP:    return "WAIT_LAND_WP";
+    case MissionCyclePhase::FOLLOW_LAND:     return "FOLLOW_LAND";
+    case MissionCyclePhase::WAIT_TAKEOFF_WP: return "WAIT_TAKEOFF_WP";
+    case MissionCyclePhase::FOLLOW_TAKEOFF:  return "FOLLOW_TAKEOFF";
+    default:                                  return "UNKNOWN";
   }
 }
 
@@ -697,9 +714,14 @@ void DroneControllerCompleto::mission_waypoints_callback(
   if (msg->poses.size() == 1 &&
       msg->poses[0].position.z >= config_.land_z_threshold)
   {
-    if (!mission_interrupt_active_) {
+    // Accept takeoff only when the mission cycle is in the WAIT_TAKEOFF_WP phase.
+    // This phase is set when DISARM is confirmed after the landing, so the
+    // takeoff waypoint is accepted even if the landing portion is already done.
+    if (mission_cycle_phase_ != MissionCyclePhase::WAIT_TAKEOFF_WP) {
       RCLCPP_WARN(this->get_logger(),
-        "⚠️ /mission_waypoints (takeoff) recebido sem missão ativa – ignorado.");
+        "⚠️ /mission_waypoints (takeoff) recebido em fase '%s' – ignorado. "
+        "Esperado: WAIT_TAKEOFF_WP.",
+        mission_cycle_phase_name(mission_cycle_phase_));
       return;
     }
 
@@ -720,6 +742,9 @@ void DroneControllerCompleto::mission_waypoints_callback(
     // current_waypoint_idx_ — the main trajectory must be preserved so that
     // handle_state2_hover() can resume it after the drone reaches altitude.
 
+    // Advance phase: drone is now climbing; trajectory resumes at z >= MISSION_RESUME_ALTITUDE_M.
+    mission_cycle_phase_ = MissionCyclePhase::FOLLOW_TAKEOFF;
+
     activate_offboard_arm_if_needed();
 
     takeoff_cmd_id_ = cmd_queue_.enqueue(
@@ -731,23 +756,27 @@ void DroneControllerCompleto::mission_waypoints_callback(
     state_voo_ = 1;
     takeoff_counter_ = 0;
     RCLCPP_INFO(this->get_logger(),
-      "🚀 [MISSION] Re-arm/decolagem iniciada (z_alvo=%.2f m). "
-      "Retomará trajetória em WP[%d] após z >= 1.5 m.",
-      takeoff_target_z_, current_waypoint_idx_);
+      "🚀 [MISSION FOLLOW_TAKEOFF] Re-arm/decolagem iniciada (z_alvo=%.2f m). "
+      "Retomará trajetória em WP[%d] após z >= %.1f m.",
+      takeoff_target_z_, current_waypoint_idx_, MISSION_RESUME_ALTITUDE_M);
     return;
   }
 
   // Landing waypoints: store for use by handle_mission_interrupt_in_state3().
-  if (!mission_interrupt_active_) {
+  // Accept only when the mission cycle is waiting for landing waypoints.
+  if (mission_cycle_phase_ != MissionCyclePhase::WAIT_LAND_WP) {
     RCLCPP_WARN(this->get_logger(),
-      "⚠️ /mission_waypoints (pouso) recebido sem missão ativa – ignorado.");
+      "⚠️ /mission_waypoints (pouso) recebido em fase '%s' – ignorado. "
+      "Esperado: WAIT_LAND_WP.",
+      mission_cycle_phase_name(mission_cycle_phase_));
     return;
   }
 
   mission_waypoints_ = msg->poses;
   mission_wp_follow_idx_ = 0;
+  mission_cycle_phase_ = MissionCyclePhase::FOLLOW_LAND;
   RCLCPP_INFO(this->get_logger(),
-    "📍 [MISSION] %zu waypoints de pouso recebidos em /mission_waypoints.",
+    "📍 [MISSION FOLLOW_LAND] %zu waypoints de pouso recebidos em /mission_waypoints.",
     msg->poses.size());
 }
 
@@ -1569,13 +1598,15 @@ void DroneControllerCompleto::handle_state2_hover()
     controlador_ativo_ ? "ATIVO" : "INATIVO");
 
   // After a mission interrupt re-arm, resume the main trajectory when the
-  // drone has reached a safe altitude (z >= 1.5 m).
-  if (mission_interrupt_active_ && current_z_real_ >= 1.5) {
+  // drone has reached a safe altitude (z >= MISSION_RESUME_ALTITUDE_M).
+  if (mission_cycle_phase_ == MissionCyclePhase::FOLLOW_TAKEOFF &&
+      current_z_real_ >= MISSION_RESUME_ALTITUDE_M)
+  {
     RCLCPP_INFO(this->get_logger(),
-      "✅ [MISSION] Altitude %.2f m >= 1.5 m após decolagem. "
-      "Retomando trajetória principal em WP[%d].",
-      current_z_real_, current_waypoint_idx_);
-    mission_interrupt_active_ = false;
+      "✅ [MISSION FOLLOW_TAKEOFF] Altitude %.2f m >= %.1f m após re-arm. "
+      "Retomando trajetória principal em WP[%d]. Fase: NONE.",
+      current_z_real_, MISSION_RESUME_ALTITUDE_M, current_waypoint_idx_);
+    mission_cycle_phase_ = MissionCyclePhase::NONE;
     mission_waypoints_.clear();
     mission_wp_follow_idx_ = 0;
     // Only resume trajectory if there are remaining waypoints.
@@ -1790,7 +1821,12 @@ void DroneControllerCompleto::handle_state3_trajectory()
   if (!initialize_trajectory()) { return; }
 
   // Mission interrupt: follow mission_waypoints instead of main trajectory.
-  if (mission_interrupt_active_) {
+  // Only handle the landing phases (WAIT_LAND_WP / FOLLOW_LAND) here.
+  // The WAIT_TAKEOFF_WP and FOLLOW_TAKEOFF phases are handled by state 0 and
+  // handle_state2_hover() respectively, after the drone is on the ground.
+  if (mission_cycle_phase_ == MissionCyclePhase::WAIT_LAND_WP ||
+      mission_cycle_phase_ == MissionCyclePhase::FOLLOW_LAND)
+  {
     handle_mission_interrupt_in_state3();
     return;
   }
@@ -1856,10 +1892,10 @@ void DroneControllerCompleto::handle_state3_trajectory()
         // Enter mission interrupt so mission_manager runs its land/disarm/rearm/takeoff
         // cycle for the last reached waypoint (including WP0).
         RCLCPP_INFO(this->get_logger(),
-          "🔄 [MISSION INTERRUPT START] Fim de trajetória — ativando mission_interrupt para WP%d. "
+          "🔄 [MISSION WAIT_LAND_WP] Fim de trajetória — iniciando ciclo de missão para WP%d. "
           "Aguardando /mission_waypoints de pouso.",
           last_waypoint_reached_idx_);
-        mission_interrupt_active_ = true;
+        mission_cycle_phase_ = MissionCyclePhase::WAIT_LAND_WP;
         mission_waypoints_.clear();
         mission_wp_follow_idx_ = 0;
         return;
@@ -1868,10 +1904,10 @@ void DroneControllerCompleto::handle_state3_trajectory()
       // Enter mission interrupt mode: wait for /mission_waypoints before
       // continuing to the next main waypoint (including WP0).
       RCLCPP_INFO(this->get_logger(),
-        "🔄 [MISSION INTERRUPT START] Ativando mission_interrupt para WP%d. "
+        "🔄 [MISSION WAIT_LAND_WP] Iniciando ciclo de missão para WP%d. "
         "Trajetória pausada; aguardando /mission_waypoints de pouso.",
         last_waypoint_reached_idx_);
-      mission_interrupt_active_ = true;
+      mission_cycle_phase_ = MissionCyclePhase::WAIT_LAND_WP;
       mission_waypoints_.clear();
       mission_wp_follow_idx_ = 0;
     }
@@ -1889,15 +1925,15 @@ void DroneControllerCompleto::mission_interrupt_done_callback(
 
   RCLCPP_INFO(this->get_logger(),
     "📩 [MISSION] /mission_interrupt_done recebido (WP[%d]). "
-    "mission_interrupt_active_=%s, state_voo_=%d",
+    "mission_cycle_phase_=%s, state_voo_=%d",
     msg->data,
-    mission_interrupt_active_ ? "true" : "false",
+    mission_cycle_phase_name(mission_cycle_phase_),
     state_voo_);
 
-  if (!mission_interrupt_active_) {
+  if (mission_cycle_phase_ == MissionCyclePhase::NONE) {
     // Already resumed via the altitude-based check in handle_state2_hover(); no-op.
     RCLCPP_INFO(this->get_logger(),
-      "ℹ️ [MISSION] Trajetória já retomada (mission_interrupt_active_=false). Sinal ignorado.");
+      "ℹ️ [MISSION] Trajetória já retomada (phase=NONE). Sinal ignorado.");
     return;
   }
 
@@ -1905,10 +1941,10 @@ void DroneControllerCompleto::mission_interrupt_done_callback(
   // fired yet (e.g. drone still climbing).  Set controlador_ativo_ and clear
   // mission state so the FSM resumes trajectory as soon as state_voo_ reaches 2.
   RCLCPP_INFO(this->get_logger(),
-    "✅ [MISSION INTERRUPT DONE] Retomando trajetória em WP[%d] por sinal /mission_interrupt_done.",
-    current_waypoint_idx_);
+    "✅ [MISSION INTERRUPT DONE] Retomando trajetória em WP[%d] (fase anterior: %s).",
+    current_waypoint_idx_, mission_cycle_phase_name(mission_cycle_phase_));
 
-  mission_interrupt_active_ = false;
+  mission_cycle_phase_ = MissionCyclePhase::NONE;
   mission_waypoints_.clear();
   mission_wp_follow_idx_ = 0;
 
@@ -1916,6 +1952,9 @@ void DroneControllerCompleto::mission_interrupt_done_callback(
       current_waypoint_idx_ < static_cast<int>(trajectory_waypoints_.size()))
   {
     controlador_ativo_ = true;
+    RCLCPP_INFO(this->get_logger(),
+      "▶️ [MISSION] controlador_ativo_=true — trajetória retomará em WP[%d] ao atingir HOVER.",
+      current_waypoint_idx_);
   } else {
     RCLCPP_WARN(this->get_logger(),
       "⚠️ [MISSION] Nenhum waypoint restante em current_waypoint_idx_=%d (tamanho=%zu). "
@@ -1961,9 +2000,26 @@ void DroneControllerCompleto::handle_state4_landing()
       RCLCPP_INFO(this->get_logger(),
         "✅ DISARM confirmado pelo FCU — transicionando para aguardar novo comando.");
       disarm_requested_ = false;
+
+      // If this DISARM is part of a mission interrupt cycle, advance to
+      // WAIT_TAKEOFF_WP so the takeoff waypoint from mission_manager is accepted
+      // even if the WAIT_LAND_WP / FOLLOW_LAND phase has already been processed.
+      // This is the key state transition that prevents the "takeoff recebido sem
+      // missão ativa" bug: the phase is now WAIT_TAKEOFF_WP, not NONE.
+      if (mission_cycle_phase_ == MissionCyclePhase::FOLLOW_LAND ||
+          mission_cycle_phase_ == MissionCyclePhase::WAIT_LAND_WP)
+      {
+        mission_cycle_phase_ = MissionCyclePhase::WAIT_TAKEOFF_WP;
+        RCLCPP_INFO(this->get_logger(),
+          "🔄 [MISSION WAIT_TAKEOFF_WP] DISARM confirmado durante ciclo de missão. "
+          "Aguardando waypoint de decolagem em /mission_waypoints...");
+      }
+
       state_voo_ = 0;
       RCLCPP_WARN(this->get_logger(),
-        "⏳ Aguardando novo comando de waypoint para decolar novamente...");
+        "⏳ Aguardando novo comando de waypoint para decolar novamente... "
+        "(fase: %s)",
+        mission_cycle_phase_name(mission_cycle_phase_));
     } else {
       RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 3000,
         "⏳ [DISARM] Aguardando confirmação de DISARM pelo FCU...");

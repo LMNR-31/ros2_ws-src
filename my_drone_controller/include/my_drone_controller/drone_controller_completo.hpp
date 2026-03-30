@@ -27,6 +27,17 @@
 
 namespace drone_control {
 
+/// Phase of a per-waypoint mission-interrupt cycle (land → disarm → rest → re-arm → takeoff).
+/// Using an explicit phase instead of a single boolean prevents the race where
+/// mission_interrupt_active_ is cleared before the takeoff waypoint arrives.
+enum class MissionCyclePhase {
+  NONE,            ///< No mission interrupt active.
+  WAIT_LAND_WP,    ///< Waypoint reached; waiting for landing waypoints on /mission_waypoints.
+  FOLLOW_LAND,     ///< Landing waypoints received; drone is descending toward ground.
+  WAIT_TAKEOFF_WP, ///< Landing + DISARM complete; waiting for takeoff waypoint on /mission_waypoints.
+  FOLLOW_TAKEOFF,  ///< Takeoff waypoint received; drone ascending; trajectory resumes at z >= 1.5 m.
+};
+
 /**
  * @brief Complete drone controller node with command tracking and safety.
  *
@@ -74,6 +85,10 @@ public:
   static constexpr double MIN_SETPOINT_RATE_HZ = 20.0;
   /// Watchdog: maximum allowed silence between setpoint publishes (0.05 s = 1 / 20 Hz).
   static constexpr double MAX_SETPOINT_SILENCE_S = 1.0 / MIN_SETPOINT_RATE_HZ;
+
+  /// Minimum altitude [m] the drone must reach after a mission-interrupt re-arm
+  /// before the FSM considers the takeoff complete and resumes the main trajectory.
+  static constexpr double MISSION_RESUME_ALTITUDE_M = 1.5;
 
   /// Minimum number of setpoints to publish before requesting ARM+OFFBOARD.
   /// At 100 Hz this equates to ~200 ms of continuous streaming, which is
@@ -300,8 +315,10 @@ private:
   int last_waypoint_reached_idx_;
 
   // ── Mission interrupt state (per-waypoint land/disarm/rearm/takeoff cycle) ──
-  /// True while a per-waypoint mission cycle is in progress.
-  bool mission_interrupt_active_{false};
+  /// Phase of the current per-waypoint mission cycle.  NONE means no cycle is
+  /// active.  Using an explicit phase (rather than a single boolean) prevents
+  /// the race where a single flag is cleared before the takeoff waypoint arrives.
+  MissionCyclePhase mission_cycle_phase_{MissionCyclePhase::NONE};
   /// Current index into mission_waypoints_ being followed.
   int mission_wp_follow_idx_{0};
   /// Waypoints for the current mission cycle (landing or takeoff), received
