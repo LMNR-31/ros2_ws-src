@@ -1,17 +1,17 @@
 #include <rclcpp/rclcpp.hpp>
-#include <rclcpp/rate.hpp>
 #include <geometry_msgs/msg/pose_array.hpp>
 #include <geometry_msgs/msg/pose.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
-#include <thread>
 #include <chrono>
 
 using namespace std::chrono_literals;
 
+enum class LandingPhase { WAIT_POSE, PUBLISH, WAIT_LAND, DONE };
+
 class DronePublishLandingWaypoints : public rclcpp::Node
 {
 public:
-  DronePublishLandingWaypoints() : Node("drone_publish_landing_waypoints")
+  DronePublishLandingWaypoints() : Node("drone_publish_landing_waypoints"), phase_(LandingPhase::WAIT_POSE)
   {
     waypoints_pub_ = this->create_publisher<geometry_msgs::msg::PoseArray>("/mission_waypoints", 10);
 
@@ -22,69 +22,72 @@ public:
         pose_received_ = true;
       });
 
+    // Timer-based state machine — runs at 10 Hz; no blocking or spin_some in constructor
+    timer_ = this->create_wall_timer(100ms, std::bind(&DronePublishLandingWaypoints::tick, this));
+
     RCLCPP_INFO(this->get_logger(), "📡 Nó de publicação de waypoints de pouso iniciado");
     RCLCPP_INFO(this->get_logger(), "⏳ Aguardando posição do drone...");
-
-    rclcpp::Rate loop_rate(10);
-    int wait_count = 0;
-    while (!pose_received_ && wait_count < 50) {
-      rclcpp::spin_some(this->get_node_base_interface());
-      loop_rate.sleep();
-      wait_count++;
-    }
-
-    if (!pose_received_) {
-      RCLCPP_WARN(this->get_logger(), "⚠️ Timeout aguardando pose. Mantendo última posição conhecida...");
-      // NÃO reseta X e Y - mantém o que foi recebido (ou 0,0 se nada foi recebido)
-      // Apenas ajusta Z se estiver abaixo de um valor seguro
-      if (current_pose_.pose.position.z < 0.1) {
-        current_pose_.pose.position.z = 2.0;  // Altura segura
-      }
-      RCLCPP_INFO(this->get_logger(), "✅ Usando última pose: X=%.2f, Y=%.2f, Z=%.2f",
-        current_pose_.pose.position.x,
-        current_pose_.pose.position.y,
-        current_pose_.pose.position.z);
-    } else {
-      RCLCPP_INFO(this->get_logger(), "✅ Pose recebida! X=%.2f, Y=%.2f, Z=%.2f",
-        current_pose_.pose.position.x,
-        current_pose_.pose.position.y,
-        current_pose_.pose.position.z);
-    }
-
-    publishLandingWaypoints();
-
-    RCLCPP_INFO(this->get_logger(), "✅ Waypoints de pouso publicados! Aguardando pouso...");
-
-    // Aguarda o drone pousar de fato (Z < 0.1 m) antes de encerrar
-    // Só aguarda se temos dados reais de pose
-    if (pose_received_) {
-      rclcpp::Rate wait_rate(10);
-      int land_timeout = 0;
-      const int max_wait_cycles = 300; // 30 segundos máximo
-      while (current_pose_.pose.position.z > 0.5 && land_timeout < max_wait_cycles) {
-        rclcpp::spin_some(this->get_node_base_interface());
-        wait_rate.sleep();
-        land_timeout++;
-        if (land_timeout % 20 == 0) {
-          RCLCPP_INFO(this->get_logger(), "  📍 Pousando... Z atual: %.2f m", current_pose_.pose.position.z);
-        }
-      }
-
-      if (current_pose_.pose.position.z <= 0.5) {
-        RCLCPP_INFO(this->get_logger(), "✅ Pouso confirmado! Z=%.2f m", current_pose_.pose.position.z);
-      } else {
-        RCLCPP_WARN(this->get_logger(), "⚠️ Timeout aguardando pouso! Z=%.2f m", current_pose_.pose.position.z);
-      }
-    } else {
-      RCLCPP_WARN(this->get_logger(), "⚠️ Sem dados de pose - não é possível confirmar pouso");
-    }
-
-    RCLCPP_INFO(this->get_logger(), "✅ Finalizando nó drone_publish_landing_waypoints");
-    std::this_thread::sleep_for(std::chrono::seconds(1));
-    rclcpp::shutdown();
   }
 
 private:
+  void tick()
+  {
+    switch (phase_) {
+
+      case LandingPhase::WAIT_POSE:
+        wait_ticks_++;
+        if (pose_received_) {
+          RCLCPP_INFO(this->get_logger(), "✅ Pose recebida! X=%.2f, Y=%.2f, Z=%.2f",
+            current_pose_.pose.position.x,
+            current_pose_.pose.position.y,
+            current_pose_.pose.position.z);
+          phase_ = LandingPhase::PUBLISH;
+        } else if (wait_ticks_ >= 50) {  // 5 s timeout
+          RCLCPP_WARN(this->get_logger(), "⚠️ Timeout aguardando pose. Usando posição de fallback...");
+          if (current_pose_.pose.position.z < 0.1) {
+            current_pose_.pose.position.z = 2.0;
+          }
+          RCLCPP_INFO(this->get_logger(), "✅ Usando última pose: X=%.2f, Y=%.2f, Z=%.2f",
+            current_pose_.pose.position.x,
+            current_pose_.pose.position.y,
+            current_pose_.pose.position.z);
+          phase_ = LandingPhase::PUBLISH;
+        }
+        break;
+
+      case LandingPhase::PUBLISH:
+        publishLandingWaypoints();
+        RCLCPP_INFO(this->get_logger(), "✅ Waypoints de pouso publicados! Aguardando pouso...");
+        land_ticks_ = 0;
+        phase_ = LandingPhase::WAIT_LAND;
+        break;
+
+      case LandingPhase::WAIT_LAND:
+        if (current_pose_.pose.position.z <= 0.5) {
+          RCLCPP_INFO(this->get_logger(), "✅ Pouso confirmado! Z=%.2f m",
+            current_pose_.pose.position.z);
+          phase_ = LandingPhase::DONE;
+        } else {
+          land_ticks_++;
+          if (land_ticks_ % 20 == 0) {
+            RCLCPP_INFO(this->get_logger(), "  📍 Pousando... Z atual: %.2f m",
+              current_pose_.pose.position.z);
+          }
+          if (land_ticks_ >= 300) {  // 30 s timeout
+            RCLCPP_WARN(this->get_logger(), "⚠️ Timeout aguardando pouso! Z=%.2f m",
+              current_pose_.pose.position.z);
+            phase_ = LandingPhase::DONE;
+          }
+        }
+        break;
+
+      case LandingPhase::DONE:
+        RCLCPP_INFO(this->get_logger(), "✅ Finalizando nó drone_publish_landing_waypoints");
+        timer_->cancel();
+        rclcpp::shutdown();
+        break;
+    }
+  }
 
   void publishLandingWaypoints()
   {
@@ -96,7 +99,7 @@ private:
     double landing_z = 0.05;
     double delta_z = current_z - landing_z;
 
-    // ✅ Descida em 2 waypoints (início e solo)
+    // Descida em 2 waypoints (início e solo)
     for (int i = 0; i <= 1; i++) {
       auto pose = geometry_msgs::msg::Pose();
       pose.position.x = current_pose_.pose.position.x;
@@ -131,6 +134,8 @@ private:
 
   rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr waypoints_pub_;
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_sub_;
+  rclcpp::TimerBase::SharedPtr timer_;
+
   geometry_msgs::msg::PoseStamped current_pose_ = []() {
     geometry_msgs::msg::PoseStamped p;
     p.pose.position.x = 0.0;
@@ -140,6 +145,10 @@ private:
     return p;
   }();
   bool pose_received_ = false;
+
+  LandingPhase phase_;
+  int wait_ticks_ = 0;
+  int land_ticks_ = 0;
 };
 
 int main(int argc, char **argv)

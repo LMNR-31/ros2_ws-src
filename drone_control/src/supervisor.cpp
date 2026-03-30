@@ -41,6 +41,10 @@ private:
     // ── Called on each /waypoint_reached message ───────────────────────────
     void waypoint_reached_callback(const std_msgs::msg::Int32::SharedPtr msg) {
         int wp = msg->data;
+        if (wp == 0) {
+            RCLCPP_INFO(this->get_logger(), "Waypoint 0 atingido — mission_manager não é executado no primeiro waypoint.");
+            return;  // skip WP 0: no landing/takeoff cycle on the very first waypoint
+        }
         if (wp == last_launched_waypoint_idx_) {
             return;  // already enqueued for this index
         }
