@@ -2,11 +2,12 @@
 #include <geometry_msgs/msg/pose_array.hpp>
 #include <geometry_msgs/msg/pose.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
+#include <mavros_msgs/msg/state.hpp>
 #include <chrono>
 
 using namespace std::chrono_literals;
 
-enum class LandingPhase { WAIT_POSE, PUBLISH, WAIT_LAND, DONE };
+enum class LandingPhase { WAIT_POSE, PUBLISH, WAIT_DISARM, DONE };
 
 class DronePublishLandingWaypoints : public rclcpp::Node
 {
@@ -20,6 +21,13 @@ public:
       [this](const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
         current_pose_ = *msg;
         pose_received_ = true;
+      });
+
+    state_sub_ = this->create_subscription<mavros_msgs::msg::State>(
+      "/uav1/mavros/state", 10,
+      [this](const mavros_msgs::msg::State::SharedPtr msg) {
+        armed_ = msg->armed;
+        state_received_ = true;
       });
 
     // Timer-based state machine — runs at 10 Hz; no blocking or spin_some in constructor
@@ -43,38 +51,37 @@ private:
             current_pose_.pose.position.z);
           phase_ = LandingPhase::PUBLISH;
         } else if (wait_ticks_ >= 50) {  // 5 s timeout
-          RCLCPP_WARN(this->get_logger(), "⚠️ Timeout aguardando pose. Usando posição de fallback...");
-          if (current_pose_.pose.position.z < 0.1) {
-            current_pose_.pose.position.z = 2.0;
-          }
-          RCLCPP_INFO(this->get_logger(), "✅ Usando última pose: X=%.2f, Y=%.2f, Z=%.2f",
-            current_pose_.pose.position.x,
-            current_pose_.pose.position.y,
-            current_pose_.pose.position.z);
-          phase_ = LandingPhase::PUBLISH;
+          RCLCPP_ERROR(this->get_logger(),
+            "❌ Timeout aguardando pose: não é possível publicar /mission_waypoints sem posição válida (evitando XY=(0,0)).");
+          timer_->cancel();
+          rclcpp::shutdown();
         }
         break;
 
       case LandingPhase::PUBLISH:
         publishLandingWaypoints();
-        RCLCPP_INFO(this->get_logger(), "✅ Waypoints de pouso publicados! Aguardando pouso...");
-        land_ticks_ = 0;
-        phase_ = LandingPhase::WAIT_LAND;
+        RCLCPP_INFO(this->get_logger(), "✅ Waypoints de pouso publicados! Aguardando DISARM...");
+        disarm_ticks_ = 0;
+        phase_ = LandingPhase::WAIT_DISARM;
         break;
 
-      case LandingPhase::WAIT_LAND:
-        if (current_pose_.pose.position.z <= 0.5) {
-          RCLCPP_INFO(this->get_logger(), "✅ Pouso confirmado! Z=%.2f m",
-            current_pose_.pose.position.z);
+      case LandingPhase::WAIT_DISARM:
+        if (state_received_ && !armed_) {
+          RCLCPP_INFO(this->get_logger(),
+            "✅ Pouso confirmado por DISARM (armed=false). Encerrando.");
           phase_ = LandingPhase::DONE;
         } else {
-          land_ticks_++;
-          if (land_ticks_ % 20 == 0) {
-            RCLCPP_INFO(this->get_logger(), "  📍 Pousando... Z atual: %.2f m",
-              current_pose_.pose.position.z);
+          disarm_ticks_++;
+          if (disarm_ticks_ % 20 == 0) {
+            RCLCPP_INFO(this->get_logger(),
+              "  📍 Aguardando DISARM... Z atual: %.2f m (armed=%s, t=%ds)",
+              current_pose_.pose.position.z,
+              armed_ ? "true" : "false",
+              disarm_ticks_ / 10);
           }
-          if (land_ticks_ >= 300) {  // 30 s timeout
-            RCLCPP_WARN(this->get_logger(), "⚠️ Timeout aguardando pouso! Z=%.2f m",
+          if (disarm_ticks_ >= 600) {  // 60 s timeout
+            RCLCPP_WARN(this->get_logger(),
+              "⚠️ Timeout aguardando DISARM (60s)! Encerrando mesmo sem confirmar pouso. Z=%.2f m",
               current_pose_.pose.position.z);
             phase_ = LandingPhase::DONE;
           }
@@ -134,21 +141,19 @@ private:
 
   rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr waypoints_pub_;
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_sub_;
+  rclcpp::Subscription<mavros_msgs::msg::State>::SharedPtr state_sub_;
   rclcpp::TimerBase::SharedPtr timer_;
 
-  geometry_msgs::msg::PoseStamped current_pose_ = []() {
-    geometry_msgs::msg::PoseStamped p;
-    p.pose.position.x = 0.0;
-    p.pose.position.y = 0.0;
-    p.pose.position.z = 2.0;  // Altura segura como fallback inicial
-    p.pose.orientation.w = 1.0;
-    return p;
-  }();
+  geometry_msgs::msg::PoseStamped current_pose_{};
   bool pose_received_ = false;
+  // Initialize armed_ to true so WAIT_DISARM only completes when state_received_ is
+  // also true (i.e., after at least one /uav1/mavros/state message is received).
+  bool armed_ = true;
+  bool state_received_ = false;
 
   LandingPhase phase_;
   int wait_ticks_ = 0;
-  int land_ticks_ = 0;
+  int disarm_ticks_ = 0;
 };
 
 int main(int argc, char **argv)

@@ -71,6 +71,7 @@ add_executable(drone_publish_landing_waypoints src/drone_publish_landing_waypoin
 ament_target_dependencies(drone_publish_landing_waypoints
   rclcpp
   geometry_msgs
+  mavros_msgs
 )
 
 install(TARGETS drone_publish_landing_waypoints
