@@ -18,7 +18,7 @@ public:
       mission_manager_pid_(-1),
       trajectory_done_queued_(false)
     {
-        this->declare_parameter<int>("min_waypoint_idx_to_trigger", 1);
+        this->declare_parameter<int>("min_waypoint_idx_to_trigger", 0);
         min_waypoint_idx_to_trigger_ = this->get_parameter("min_waypoint_idx_to_trigger").as_int();
 
         progress_sub_ = this->create_subscription<std_msgs::msg::Float32>(
