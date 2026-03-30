@@ -16,6 +16,20 @@ public:
   {
     waypoints_pub_ = this->create_publisher<geometry_msgs::msg::PoseArray>("/mission_waypoints", 10);
 
+    // Primary XY reference: the waypoint position latched by the controller at
+    // the moment of reach.  This is more accurate than the live MAVROS pose and
+    // avoids any XY=(0,0) fallback from an uninitialised pose message.
+    latch_pose_sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
+      "/mission_latch_pose", 10,
+      [this](const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
+        latch_pose_ = *msg;
+        latch_pose_received_ = true;
+        RCLCPP_INFO(this->get_logger(),
+          "📌 Latch pose recebida: X=%.2f, Y=%.2f, Z=%.2f",
+          msg->pose.position.x, msg->pose.position.y, msg->pose.position.z);
+      });
+
+    // Fallback XY reference: live MAVROS local position.
     pose_sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
       "/uav1/mavros/local_position/pose", 10,
       [this](const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
@@ -34,23 +48,36 @@ public:
     timer_ = this->create_wall_timer(100ms, std::bind(&DronePublishLandingWaypoints::tick, this));
 
     RCLCPP_INFO(this->get_logger(), "📡 Nó de publicação de waypoints de pouso iniciado");
-    RCLCPP_INFO(this->get_logger(), "⏳ Aguardando posição do drone...");
+    RCLCPP_INFO(this->get_logger(), "⏳ Aguardando posição do drone (/mission_latch_pose ou /uav1/mavros/local_position/pose)...");
   }
 
 private:
+  // Timer ticks every 100 ms (10 Hz); named constants make timeouts explicit.
+  static constexpr int kWaitPoseTimeoutTicks = 50;   ///< 50 × 100 ms = 5 s
+  static constexpr int kDisarmTimeoutTicks   = 600;  ///< 600 × 100 ms = 60 s
+
   void tick()
   {
     switch (phase_) {
 
       case LandingPhase::WAIT_POSE:
         wait_ticks_++;
-        if (pose_received_) {
-          RCLCPP_INFO(this->get_logger(), "✅ Pose recebida! X=%.2f, Y=%.2f, Z=%.2f",
-            current_pose_.pose.position.x,
-            current_pose_.pose.position.y,
-            current_pose_.pose.position.z);
+        if (latch_pose_received_ || pose_received_) {
+          if (latch_pose_received_) {
+            RCLCPP_INFO(this->get_logger(),
+              "✅ Usando latch pose (waypoint atingido): X=%.2f, Y=%.2f, Z=%.2f",
+              latch_pose_.pose.position.x,
+              latch_pose_.pose.position.y,
+              latch_pose_.pose.position.z);
+          } else {
+            RCLCPP_INFO(this->get_logger(),
+              "✅ Usando pose MAVROS: X=%.2f, Y=%.2f, Z=%.2f",
+              current_pose_.pose.position.x,
+              current_pose_.pose.position.y,
+              current_pose_.pose.position.z);
+          }
           phase_ = LandingPhase::PUBLISH;
-        } else if (wait_ticks_ >= 50) {  // 5 s timeout
+        } else if (wait_ticks_ >= kWaitPoseTimeoutTicks) {
           RCLCPP_ERROR(this->get_logger(),
             "❌ Timeout aguardando pose: não é possível publicar /mission_waypoints sem posição válida (evitando XY=(0,0)).");
           timer_->cancel();
@@ -79,7 +106,7 @@ private:
               armed_ ? "true" : "false",
               disarm_ticks_ / 10);
           }
-          if (disarm_ticks_ >= 600) {  // 60 s timeout
+          if (disarm_ticks_ >= kDisarmTimeoutTicks) {
             RCLCPP_WARN(this->get_logger(),
               "⚠️ Timeout aguardando DISARM (60s)! Encerrando mesmo sem confirmar pouso. Z=%.2f m",
               current_pose_.pose.position.z);
@@ -102,15 +129,24 @@ private:
     msg.header.frame_id = "map";
     msg.header.stamp = this->now();
 
-    double current_z = current_pose_.pose.position.z;
+    // Use the controller-latched waypoint XY (most accurate) when available;
+    // fall back to the live MAVROS local-position pose otherwise.
+    const auto & ref_pose = latch_pose_received_ ? latch_pose_.pose : current_pose_.pose;
+
+    double current_z = ref_pose.position.z;
+    // Use the live MAVROS altitude for Z since latch_pose Z is the trajectory
+    // waypoint altitude (may differ from the actual current altitude).
+    if (latch_pose_received_ && pose_received_) {
+      current_z = current_pose_.pose.position.z;
+    }
     double landing_z = 0.05;
     double delta_z = current_z - landing_z;
 
     // Descida em 2 waypoints (início e solo)
     for (int i = 0; i <= 1; i++) {
       auto pose = geometry_msgs::msg::Pose();
-      pose.position.x = current_pose_.pose.position.x;
-      pose.position.y = current_pose_.pose.position.y;
+      pose.position.x = ref_pose.position.x;
+      pose.position.y = ref_pose.position.y;
 
       // Descida linear: começa em current_z, termina em 0.05
       double progress = static_cast<double>(i) / 1.0;  // 0.0 → 1.0
@@ -124,9 +160,10 @@ private:
 
     RCLCPP_INFO(this->get_logger(), "📍 WAYPOINTS DE POUSO COM DESCIDA PUBLICADOS:");
     RCLCPP_INFO(this->get_logger(),
-      "   Posição XY: (%.2f, %.2f)",
-      current_pose_.pose.position.x,
-      current_pose_.pose.position.y);
+      "   Posição XY: (%.2f, %.2f) [fonte: %s]",
+      ref_pose.position.x,
+      ref_pose.position.y,
+      latch_pose_received_ ? "latch_pose" : "mavros_pose");
     RCLCPP_INFO(this->get_logger(),
       "   Descida: %.2f m → 0.05 m (2 waypoints)",
       current_z);
@@ -140,11 +177,14 @@ private:
   }
 
   rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr waypoints_pub_;
+  rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr latch_pose_sub_;
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_sub_;
   rclcpp::Subscription<mavros_msgs::msg::State>::SharedPtr state_sub_;
   rclcpp::TimerBase::SharedPtr timer_;
 
+  geometry_msgs::msg::PoseStamped latch_pose_{};  ///< Latched waypoint pose from controller
   geometry_msgs::msg::PoseStamped current_pose_{};
+  bool latch_pose_received_ = false;
   bool pose_received_ = false;
   // Initialize armed_ to true so WAIT_DISARM only completes when state_received_ is
   // also true (i.e., after at least one /uav1/mavros/state message is received).

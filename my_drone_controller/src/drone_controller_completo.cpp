@@ -98,10 +98,13 @@ void DroneControllerCompleto::setup_publishers()
   trajectory_finished_pub_ = this->create_publisher<std_msgs::msg::Bool>("/trajectory_finished", 10);
   progress_publisher_ = this->create_publisher<std_msgs::msg::Float32>("/trajectory_progress", 10);
   waypoint_reached_pub_ = this->create_publisher<std_msgs::msg::Int32>("/waypoint_reached", 10);
+  mission_latch_pose_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>(
+    "/mission_latch_pose", 10);
   RCLCPP_INFO(this->get_logger(), "✓ Publisher criado: /uav1/mavros/setpoint_raw/local");
   RCLCPP_INFO(this->get_logger(), "✓ Publisher criado: /trajectory_finished");
   RCLCPP_INFO(this->get_logger(), "✓ Publisher criado: /trajectory_progress");
   RCLCPP_INFO(this->get_logger(), "✓ Publisher criado: /waypoint_reached");
+  RCLCPP_INFO(this->get_logger(), "✓ Publisher criado: /mission_latch_pose");
 }
 
 void DroneControllerCompleto::setup_subscribers()
@@ -138,9 +141,13 @@ void DroneControllerCompleto::setup_subscribers()
     "/waypoints_4d", 1,
     std::bind(&DroneControllerCompleto::waypoints_4d_callback, this, std::placeholders::_1));
 
+  mission_interrupt_done_sub_ = this->create_subscription<std_msgs::msg::Int32>(
+    "/mission_interrupt_done", 10,
+    std::bind(&DroneControllerCompleto::mission_interrupt_done_callback, this, std::placeholders::_1));
+
   RCLCPP_INFO(this->get_logger(),
     "✓ Subscribers criados: /uav1/mavros/state, /waypoints, /mission_waypoints, /waypoint_goal, "
-    "odometria, /uav1/yaw_override/cmd, /waypoint_goal_4d e /waypoints_4d");
+    "odometria, /uav1/yaw_override/cmd, /waypoint_goal_4d, /waypoints_4d e /mission_interrupt_done");
 }
 
 void DroneControllerCompleto::setup_services()
@@ -1825,6 +1832,21 @@ void DroneControllerCompleto::handle_state3_trajectory()
         "📍 Waypoint %d atingido (dist_xy=%.3fm, dz=%.3fm) → /waypoint_reached",
         current_waypoint_idx_, dist_xy, dz);
 
+      // Publish the exact waypoint position as latch pose so that
+      // drone_publish_landing_waypoints can use it as the XY reference for
+      // landing (avoids any XY=(0,0) fallback from delayed MAVROS pose).
+      {
+        geometry_msgs::msg::PoseStamped latch_msg;
+        latch_msg.header.stamp = this->now();
+        latch_msg.header.frame_id = "map";
+        latch_msg.pose = trajectory_waypoints_[last_waypoint_reached_idx_];
+        mission_latch_pose_pub_->publish(latch_msg);
+        RCLCPP_INFO(this->get_logger(),
+          "📌 [MISSION] Latch pose publicada para WP[%d]: X=%.2f, Y=%.2f, Z=%.2f",
+          last_waypoint_reached_idx_,
+          latch_msg.pose.position.x, latch_msg.pose.position.y, latch_msg.pose.position.z);
+      }
+
       // Advance to the next waypoint index.
       current_waypoint_idx_++;
 
@@ -1834,7 +1856,8 @@ void DroneControllerCompleto::handle_state3_trajectory()
         // Enter mission interrupt so mission_manager runs its land/disarm/rearm/takeoff
         // cycle for the last reached waypoint (including WP0).
         RCLCPP_INFO(this->get_logger(),
-          "🔄 [MISSION] Fim de trajetória — ativando mission_interrupt para WP%d.",
+          "🔄 [MISSION INTERRUPT START] Fim de trajetória — ativando mission_interrupt para WP%d. "
+          "Aguardando /mission_waypoints de pouso.",
           last_waypoint_reached_idx_);
         mission_interrupt_active_ = true;
         mission_waypoints_.clear();
@@ -1845,12 +1868,59 @@ void DroneControllerCompleto::handle_state3_trajectory()
       // Enter mission interrupt mode: wait for /mission_waypoints before
       // continuing to the next main waypoint (including WP0).
       RCLCPP_INFO(this->get_logger(),
-        "🔄 [MISSION] Ativando mission_interrupt para WP%d.",
+        "🔄 [MISSION INTERRUPT START] Ativando mission_interrupt para WP%d. "
+        "Trajetória pausada; aguardando /mission_waypoints de pouso.",
         last_waypoint_reached_idx_);
       mission_interrupt_active_ = true;
       mission_waypoints_.clear();
       mission_wp_follow_idx_ = 0;
     }
+  }
+}
+
+// ============================================================
+// MISSION INTERRUPT DONE CALLBACK (/mission_interrupt_done)
+// ============================================================
+
+void DroneControllerCompleto::mission_interrupt_done_callback(
+  const std_msgs::msg::Int32::SharedPtr msg)
+{
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  RCLCPP_INFO(this->get_logger(),
+    "📩 [MISSION] /mission_interrupt_done recebido (WP[%d]). "
+    "mission_interrupt_active_=%s, state_voo_=%d",
+    msg->data,
+    mission_interrupt_active_ ? "true" : "false",
+    state_voo_);
+
+  if (!mission_interrupt_active_) {
+    // Already resumed via the altitude-based check in handle_state2_hover(); no-op.
+    RCLCPP_INFO(this->get_logger(),
+      "ℹ️ [MISSION] Trajetória já retomada (mission_interrupt_active_=false). Sinal ignorado.");
+    return;
+  }
+
+  // Fallback resume: altitude-based check in handle_state2_hover() may not have
+  // fired yet (e.g. drone still climbing).  Set controlador_ativo_ and clear
+  // mission state so the FSM resumes trajectory as soon as state_voo_ reaches 2.
+  RCLCPP_INFO(this->get_logger(),
+    "✅ [MISSION INTERRUPT DONE] Retomando trajetória em WP[%d] por sinal /mission_interrupt_done.",
+    current_waypoint_idx_);
+
+  mission_interrupt_active_ = false;
+  mission_waypoints_.clear();
+  mission_wp_follow_idx_ = 0;
+
+  if (!trajectory_waypoints_.empty() &&
+      current_waypoint_idx_ < static_cast<int>(trajectory_waypoints_.size()))
+  {
+    controlador_ativo_ = true;
+  } else {
+    RCLCPP_WARN(this->get_logger(),
+      "⚠️ [MISSION] Nenhum waypoint restante em current_waypoint_idx_=%d (tamanho=%zu). "
+      "Trajetória concluída.",
+      current_waypoint_idx_, trajectory_waypoints_.size());
   }
 }
 

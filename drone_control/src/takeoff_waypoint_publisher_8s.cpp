@@ -20,7 +20,7 @@ public:
     success_altitude_threshold_ = this->get_parameter("success_altitude_threshold").as_double();
     max_attempts_ = this->get_parameter("max_attempts").as_int();
 
-    waypoints_pub_ = this->create_publisher<geometry_msgs::msg::PoseArray>("/waypoints", 10);
+    waypoints_pub_ = this->create_publisher<geometry_msgs::msg::PoseArray>("/mission_waypoints", 10);
     odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
       "/uav1/mavros/local_position/odom", 10,
       std::bind(&TakeoffWaypointPublisher8s::odomCallback, this, _1));
