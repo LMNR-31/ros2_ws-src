@@ -115,10 +115,16 @@ private:
         RCLCPP_INFO(this->get_logger(),
             "Iniciando mission_manager para waypoint %d...", wp);
 
+        // Build the waypoint_idx ROS parameter string before fork so we own
+        // the memory in the child (no risk of dangling pointer after exec).
+        std::string wp_param = "waypoint_idx:=" + std::to_string(wp);
+
         pid_t pid = fork();
         if (pid == 0) {
-            // Child process: exec mission_manager
+            // Child process: exec mission_manager with the waypoint index so
+            // it can publish /mission_interrupt_done with the correct index.
             execlp("ros2", "ros2", "run", "drone_control", "mission_manager",
+                   "--ros-args", "-p", wp_param.c_str(),
                    (char *)nullptr);
             // exec failed
             _exit(1);

@@ -171,6 +171,11 @@ private:
   void waypoint_goal_callback(const geometry_msgs::msg::PoseStamped::SharedPtr msg);
   void waypoint_goal_4d_callback(const drone_control::msg::Waypoint4D::SharedPtr msg);
   void waypoints_4d_callback(const drone_control::msg::Waypoint4DArray::SharedPtr msg);
+  /// Called when mission_manager publishes to /mission_interrupt_done after the
+  /// full land/disarm/wait/rearm/takeoff cycle completes.  Resumes the main
+  /// trajectory from current_waypoint_idx_ if it has not already been resumed
+  /// by the altitude-based check in handle_state2_hover().
+  void mission_interrupt_done_callback(const std_msgs::msg::Int32::SharedPtr msg);
 
   // ── Setpoint publishing ──────────────────────────────────────────────────
   void publishPositionTarget(double x, double y, double z,
@@ -228,6 +233,10 @@ private:
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr trajectory_finished_pub_;
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr progress_publisher_;
   rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr waypoint_reached_pub_;
+  /// Publishes the trajectory waypoint position at the moment it is reached,
+  /// so that drone_publish_landing_waypoints can use it as an accurate XY
+  /// reference instead of relying on the live MAVROS pose.
+  rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr mission_latch_pose_pub_;
 
   // ── Subscribers ──────────────────────────────────────────────────────────
   rclcpp::Subscription<mavros_msgs::msg::State>::SharedPtr state_sub_;
@@ -238,6 +247,10 @@ private:
   rclcpp::Subscription<drone_control::msg::YawOverride>::SharedPtr yaw_override_sub_;
   rclcpp::Subscription<drone_control::msg::Waypoint4D>::SharedPtr waypoint_goal_4d_sub_;
   rclcpp::Subscription<drone_control::msg::Waypoint4DArray>::SharedPtr waypoints_4d_sub_;
+  /// Receives the completion signal from mission_manager after the full
+  /// land/disarm/wait/rearm/takeoff cycle has finished, enabling the
+  /// controller to resume the main trajectory from the next waypoint.
+  rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr mission_interrupt_done_sub_;
 
   // ── Service clients ───────────────────────────────────────────────────────
   rclcpp::Client<mavros_msgs::srv::SetMode>::SharedPtr mode_client_;
