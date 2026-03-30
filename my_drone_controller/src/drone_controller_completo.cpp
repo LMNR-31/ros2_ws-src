@@ -216,8 +216,12 @@ void DroneControllerCompleto::init_variables()
 
 void DroneControllerCompleto::trigger_landing(double z)
 {
+  // Note: controlador_ativo_ is intentionally NOT set to false here.
+  // Initiating a landing must not also initiate a pause of the controller.
+  // The trajectory controller is implicitly deactivated by the state_voo_ = 4
+  // transition; the takeoff handler resets controlador_ativo_ before the FSM
+  // can re-enter state 2 (hover) on the next flight cycle.
   pouso_em_andamento_ = true;
-  controlador_ativo_ = false;
   state_voo_ = 4;
   land_cmd_id_ = cmd_queue_.enqueue(CommandType::LAND, {{"z", std::to_string(z)}});
 }
@@ -482,7 +486,7 @@ void DroneControllerCompleto::handle_landing_waypoint_command(double z)
   trigger_landing(z);
   RCLCPP_WARN(this->get_logger(), "📋 [ID=%lu] Comando LAND enfileirado", *land_cmd_id_);
   RCLCPP_WARN(this->get_logger(),
-    "🛬 CONTROLADOR DESLIGADO - DEIXANDO drone_soft_land POUSAR\n");
+    "🛬 POUSANDO — delegando descida ao drone_soft_land\n");
 }
 
 void DroneControllerCompleto::handle_single_takeoff_waypoint_command(
@@ -1507,7 +1511,9 @@ bool DroneControllerCompleto::detect_and_handle_landing_in_trajectory()
   }
 
   pouso_em_andamento_ = true;
-  controlador_ativo_ = false;
+  // Note: controlador_ativo_ is intentionally NOT set to false here.
+  // Landing must not also pause the controller; the trajectory controller is
+  // implicitly stopped by the state_voo_ = 4 transition below.
   state_voo_ = 4;
   return true;
 }
@@ -1648,7 +1654,7 @@ void DroneControllerCompleto::handle_state3_trajectory()
 }
 
 // ============================================================
-// FSM STATE 4 — POUSO / PAUSADO
+// FSM STATE 4 — POUSO
 // ============================================================
 
 void DroneControllerCompleto::complete_landing()
@@ -1695,7 +1701,7 @@ void DroneControllerCompleto::handle_state4_landing()
   }
 
   RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 10000,
-    "🛑 CONTROLADOR PAUSADO | drone_soft_land fazendo pouso...");
+    "⬇️ POUSANDO — aguardando confirmação de aterrissagem...");
 
   if (pouso_em_andamento_) {
     if (!pouso_start_time_set_) {
