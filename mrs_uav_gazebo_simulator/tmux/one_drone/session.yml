@@ -31,11 +31,11 @@ windows:
       layout: tiled
       panes:
         # world_file:=/home/lmnr31/ros2_ws/src/arena_2025_desenho/my_arena.world
+        # --enable-realsense-down --enable-realsense-front
         - ros2 launch mrs_uav_gazebo_simulator simulation.launch.py  gz_headless:=false gz_verbose:=true
         - |
           waitForGazebo; sleep 5
-          ros2 service call /mrs_drone_spawner/spawn mrs_msgs/srv/String \
-            "{value: '1 --$UAV_TYPE --enable-rangefinder --enable-realsense-down --enable-realsense-front --pos -0.85 0.70 1 1.57'}"
+          ros2 service call /mrs_drone_spawner/spawn mrs_msgs/srv/String "{value: '1 --$UAV_TYPE --enable-rangefinder  --pos -0.85 0.70 1 1.57'}"
 
   # ── 3. PX4 API ─────────────────────────────────────────────────────────────
   - px4_api:

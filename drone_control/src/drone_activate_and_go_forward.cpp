@@ -70,7 +70,7 @@ private:
         return;
       }
       RCLCPP_WARN(this->get_logger(),
-        "Drone ainda não decolou (z=%.2f m após 3s), tentando novamente... (tentativa %d/%d)",
+        "Drone ainda não decolou (z=%.2f m após 5s), tentando novamente... (tentativa %d/%d)",
         odom_z_, attempts_+1, max_attempts_);
       published_ = false;
     }
