@@ -1953,12 +1953,16 @@ void DroneControllerCompleto::log_trajectory_progress(int idx)
 
 void DroneControllerCompleto::finalize_trajectory_complete()
 {
-  if (!trajectory_cmd_id_) { return; }
-
-  cmd_queue_.confirm(*trajectory_cmd_id_, true);
-  RCLCPP_INFO(this->get_logger(),
-    "✅ [ID=%lu] TRAJECTORY confirmada - todos os waypoints visitados", *trajectory_cmd_id_);
-  trajectory_cmd_id_.reset();
+  if (trajectory_cmd_id_) {
+    cmd_queue_.confirm(*trajectory_cmd_id_, true);
+    RCLCPP_INFO(this->get_logger(),
+      "✅ [ID=%lu] TRAJECTORY confirmada - todos os waypoints visitados", *trajectory_cmd_id_);
+    trajectory_cmd_id_.reset();
+  } else {
+    RCLCPP_WARN(this->get_logger(),
+      "⚠️ finalize_trajectory_complete chamado sem trajectory_cmd_id_ — "
+      "publicando /trajectory_finished e /trajectory_progress mesmo assim.");
+  }
 
   std_msgs::msg::Bool done_msg;
   done_msg.data = true;
