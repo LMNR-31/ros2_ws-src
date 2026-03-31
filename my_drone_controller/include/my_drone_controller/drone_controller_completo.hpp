@@ -209,6 +209,10 @@ private:
   void publish_waypoint_goal_status(double x, double y, double z);
   /// Publish trajectory_waypoints_ to /waypoints (with self-echo guard).
   void publish_waypoints_status();
+  /// Heartbeat timer callback: periodically re-publishes the current active goal to /waypoint_goal.
+  void monitor_waypoint_goal_heartbeat();
+  /// Heartbeat timer callback: periodically re-publishes trajectory_waypoints_ to /waypoints.
+  void monitor_waypoints_heartbeat();
 
   // ── Main control loop ────────────────────────────────────────────────────
   void control_loop();
@@ -288,6 +292,10 @@ private:
 
   // ── Timer ────────────────────────────────────────────────────────────────
   rclcpp::TimerBase::SharedPtr timer_;
+  /// Heartbeat timer for periodic /waypoint_goal re-publish.
+  rclcpp::TimerBase::SharedPtr monitor_waypoint_goal_timer_;
+  /// Heartbeat timer for periodic /waypoints re-publish.
+  rclcpp::TimerBase::SharedPtr monitor_waypoints_timer_;
 
   // ── FCU state ────────────────────────────────────────────────────────────
   mavros_msgs::msg::State current_state_;
@@ -376,6 +384,15 @@ private:
   int skip_self_waypoint_goal_count_{0};
   /// Loop guard: skip the next /waypoints message coming from our own publisher.
   int skip_self_waypoints_count_{0};
+
+  // ── Monitoring heartbeat parameters ──────────────────────────────────────
+  /// Rate (Hz) at which /waypoint_goal is re-published as a heartbeat.
+  double monitor_waypoint_goal_rate_hz_{5.0};
+  /// Rate (Hz) at which /waypoints is re-published as a heartbeat.
+  double monitor_waypoints_rate_hz_{1.0};
+  /// When true, heartbeat publishes are suppressed unless the drone is in flight
+  /// or has an active goal/trajectory (avoids publishing stale data at idle).
+  bool monitor_publish_only_when_active_{true};
 
   // ── Takeoff target altitude (latched) ────────────────────────────────────
   /// Fixed takeoff target altitude (metres) for the current climb.
