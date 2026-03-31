@@ -1300,16 +1300,20 @@ void DroneControllerCompleto::monitor_waypoints_heartbeat()
 // ============================================================
 
 void DroneControllerCompleto::publishPositionTarget(
-  double x, double y, double z, double yaw_rate, uint16_t type_mask)
+  double x_enu, double y_enu, double z_enu, double yaw_rate, uint16_t type_mask)
 {
+  // Inputs are in ENU (map frame): x=East, y=North, z=Up.
+  // FRAME_LOCAL_NED expects NED: x=North, y=East, z=Down.
+  // Conversion: x_ned = y_enu, y_ned = x_enu, z_ned = -z_enu.
+  // yaw_rate is already expressed in NED (clockwise positive) by all callers.
   mavros_msgs::msg::PositionTarget pt;
   pt.header.stamp = this->now();
-  pt.header.frame_id = "map";
+  pt.header.frame_id = "local_ned";
   pt.coordinate_frame = mavros_msgs::msg::PositionTarget::FRAME_LOCAL_NED;
   pt.type_mask = type_mask;
-  pt.position.x = static_cast<float>(x);
-  pt.position.y = static_cast<float>(y);
-  pt.position.z = static_cast<float>(z);
+  pt.position.x = static_cast<float>(y_enu);   // NED North = ENU y
+  pt.position.y = static_cast<float>(x_enu);   // NED East  = ENU x
+  pt.position.z = static_cast<float>(-z_enu);  // NED Down  = -ENU z
   pt.yaw_rate = static_cast<float>(yaw_rate);
   raw_pub_->publish(pt);
   // Watchdog: record time of last real publish
@@ -1318,16 +1322,20 @@ void DroneControllerCompleto::publishPositionTarget(
 }
 
 void DroneControllerCompleto::publishPositionTargetWithYaw(
-  double x, double y, double z, double yaw_rad)
+  double x_enu, double y_enu, double z_enu, double yaw_rad)
 {
+  // Inputs are in ENU (map frame): x=East, y=North, z=Up.
+  // FRAME_LOCAL_NED expects NED: x=North, y=East, z=Down.
+  // Conversion: x_ned = y_enu, y_ned = x_enu, z_ned = -z_enu.
+  // yaw_rad is already expressed in NED (clockwise positive) by all callers.
   mavros_msgs::msg::PositionTarget pt;
   pt.header.stamp = this->now();
-  pt.header.frame_id = "map";
+  pt.header.frame_id = "local_ned";
   pt.coordinate_frame = mavros_msgs::msg::PositionTarget::FRAME_LOCAL_NED;
   pt.type_mask = MASK_POS_YAW;
-  pt.position.x = static_cast<float>(x);
-  pt.position.y = static_cast<float>(y);
-  pt.position.z = static_cast<float>(z);
+  pt.position.x = static_cast<float>(y_enu);   // NED North = ENU y
+  pt.position.y = static_cast<float>(x_enu);   // NED East  = ENU x
+  pt.position.z = static_cast<float>(-z_enu);  // NED Down  = -ENU z
   pt.yaw = static_cast<float>(yaw_rad);
   raw_pub_->publish(pt);
   // Watchdog: record time of last real publish

@@ -200,9 +200,9 @@ private:
   void mission_interrupt_done_callback(const std_msgs::msg::Int32::SharedPtr msg);
 
   // ── Setpoint publishing ──────────────────────────────────────────────────
-  void publishPositionTarget(double x, double y, double z,
+  void publishPositionTarget(double x_enu, double y_enu, double z_enu,
                              double yaw_rate, uint16_t type_mask);
-  void publishPositionTargetWithYaw(double x, double y, double z, double yaw_rad);
+  void publishPositionTargetWithYaw(double x_enu, double y_enu, double z_enu, double yaw_rad);
   /// Publish a hold setpoint using hold_* if valid, otherwise current_*_ned_.
   void publish_hold_setpoint();
   /// Publish x, y, z as the current active goal to /waypoint_goal (with self-echo guard).
