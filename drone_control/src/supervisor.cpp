@@ -57,8 +57,8 @@ public:
             "/uav1/mavros/local_position/odom", 10,
             std::bind(&SupervisorNode::odom_callback, this, std::placeholders::_1));
 
-        waypoints_pub_ = this->create_publisher<geometry_msgs::msg::PoseArray>(
-            "/mission_waypoints", 10);
+        return_pub_ = this->create_publisher<geometry_msgs::msg::PoseArray>(
+            "/waypoints", 10);
 
         // Periodic timer to drain the queue and reap finished mission_manager processes.
         queue_timer_ = this->create_wall_timer(
@@ -99,11 +99,11 @@ private:
             if (pending_queue_.empty() && mission_manager_pid_ < 0) {
                 RCLCPP_INFO(this->get_logger(),
                     "Progresso %.1f%% — trajetória concluída, nenhuma missão pendente: "
-                    "retorno à origem será publicado no próximo ciclo de fila.",
+                    "retorno à origem será publicado em /waypoints no próximo ciclo de fila.",
                     msg->data);
             } else {
                 RCLCPP_INFO(this->get_logger(),
-                    "Progresso %.1f%% — trajetória concluída, retorno à origem será publicado após missões pendentes "
+                    "Progresso %.1f%% — trajetória concluída, retorno à origem via /waypoints será publicado após missões pendentes "
                     "(fila=%zu, mission_manager_pid=%d).",
                     msg->data, pending_queue_.size(), static_cast<int>(mission_manager_pid_));
             }
@@ -118,10 +118,10 @@ private:
             if (pending_queue_.empty() && mission_manager_pid_ < 0) {
                 RCLCPP_INFO(this->get_logger(),
                     "Sinal de trajetória concluída recebido, nenhuma missão pendente: "
-                    "retorno à origem será publicado no próximo ciclo de fila.");
+                    "retorno à origem via /waypoints será publicado no próximo ciclo de fila.");
             } else {
                 RCLCPP_INFO(this->get_logger(),
-                    "Sinal de trajetória concluída recebido — retorno à origem será publicado após missões pendentes "
+                    "Sinal de trajetória concluída recebido — retorno à origem via /waypoints será publicado após missões pendentes "
                     "(fila=%zu, mission_manager_pid=%d).",
                     pending_queue_.size(), static_cast<int>(mission_manager_pid_));
             }
@@ -214,11 +214,11 @@ private:
                 pose.position.z = home_z_;
                 pose.orientation.w = 1.0;
                 home_msg.poses.push_back(pose);
-                waypoints_pub_->publish(home_msg);
+                return_pub_->publish(home_msg);
                 return_home_active_ = true;
                 RCLCPP_INFO(this->get_logger(),
-                    "Retorno à origem publicado em /mission_waypoints "
-                    "(x=%.2f, y=%.2f, z=%.2f).",
+                    "🏁 Retorno à origem publicado em /waypoints "
+                    "(x=%.2f, y=%.2f, z=%.2f) — trajetória normal.",
                     home_x_, home_y_, home_z_);
             }
             return;
@@ -257,7 +257,7 @@ private:
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr finished_sub_;
     rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr waypoint_reached_sub_;
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
-    rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr waypoints_pub_;
+    rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr return_pub_;
     rclcpp::TimerBase::SharedPtr queue_timer_;
 
     int last_launched_waypoint_idx_;
