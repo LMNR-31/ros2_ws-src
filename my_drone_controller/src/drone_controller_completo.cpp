@@ -785,6 +785,7 @@ static const char * mission_cycle_phase_name(MissionCyclePhase p)
     case MissionCyclePhase::FOLLOW_LAND:     return "FOLLOW_LAND";
     case MissionCyclePhase::WAIT_TAKEOFF_WP: return "WAIT_TAKEOFF_WP";
     case MissionCyclePhase::FOLLOW_TAKEOFF:  return "FOLLOW_TAKEOFF";
+    case MissionCyclePhase::RETURN_HOME:     return "RETURN_HOME";
     default:                                  return "UNKNOWN";
   }
 }
@@ -799,6 +800,43 @@ void DroneControllerCompleto::mission_waypoints_callback(
   std::lock_guard<std::mutex> lock(mutex_);
 
   if (msg->poses.empty()) { return; }
+
+  // ── Return-home: single pose received after trajectory completion ─────────
+  // When the supervisor publishes the home waypoint after all mission cycles
+  // are done, the drone may be in NONE (hovering after the last FOLLOW_TAKEOFF)
+  // or in WAIT_LAND_WP (holding at the last trajectory waypoint).  In both
+  // cases a single-pose message that arrives while the trajectory is truly
+  // finished should be treated as a navigation target, not as a per-waypoint
+  // takeoff command.
+  {
+    const bool trajectory_complete =
+      trajectory_started_ &&
+      !trajectory_waypoints_.empty() &&
+      current_waypoint_idx_ >= static_cast<int>(trajectory_waypoints_.size());
+
+    if (msg->poses.size() == 1 &&
+        trajectory_complete &&
+        (mission_cycle_phase_ == MissionCyclePhase::NONE ||
+         mission_cycle_phase_ == MissionCyclePhase::WAIT_LAND_WP))
+    {
+      const char * prev_phase_name   = mission_cycle_phase_name(mission_cycle_phase_);
+      return_home_target_            = msg->poses[0];
+      mission_cycle_phase_           = MissionCyclePhase::RETURN_HOME;
+      mission_waypoints_.clear();
+      mission_wp_follow_idx_         = 0;
+      last_published_mission_wp_idx_ = -1;
+      controlador_ativo_             = true;  // activates handle_state3_trajectory() if drone is hovering in state 2
+      RCLCPP_INFO(this->get_logger(),
+        "🏠 [RETURN_HOME] Waypoint de retorno à origem recebido "
+        "(x=%.2f, y=%.2f, z=%.2f) após trajetória concluída (fase anterior: %s). "
+        "Iniciando navegação de retorno.",
+        return_home_target_.position.x,
+        return_home_target_.position.y,
+        return_home_target_.position.z,
+        prev_phase_name);
+      return;
+    }
+  }
 
   // Takeoff waypoint: single pose with z >= land_z_threshold.
   // Re-arms the drone without clearing the stored main trajectory so that
@@ -861,11 +899,14 @@ void DroneControllerCompleto::mission_waypoints_callback(
   }
 
   // Landing waypoints: store for use by handle_mission_interrupt_in_state3().
-  // Accept only when the mission cycle is waiting for landing waypoints.
-  if (mission_cycle_phase_ != MissionCyclePhase::WAIT_LAND_WP) {
+  // Accept when waiting for landing waypoints (WAIT_LAND_WP) or when the drone
+  // is already navigating back to the origin (RETURN_HOME) and the landing
+  // publisher fires once the drone arrives at the home position.
+  if (mission_cycle_phase_ != MissionCyclePhase::WAIT_LAND_WP &&
+      mission_cycle_phase_ != MissionCyclePhase::RETURN_HOME) {
     RCLCPP_WARN(this->get_logger(),
       "⚠️ /mission_waypoints (pouso) recebido em fase '%s' – ignorado. "
-      "Esperado: WAIT_LAND_WP.",
+      "Esperado: WAIT_LAND_WP ou RETURN_HOME.",
       mission_cycle_phase_name(mission_cycle_phase_));
     return;
   }
@@ -1980,6 +2021,24 @@ void DroneControllerCompleto::handle_mission_interrupt_in_state3()
 {
   // Hold at the waypoint that was just reached while waiting for mission waypoints.
   if (mission_waypoints_.empty()) {
+    if (mission_cycle_phase_ == MissionCyclePhase::RETURN_HOME) {
+      // Navigate toward the home position published by the supervisor.
+      // Yaw is held at 0.0 (north-facing) during the return; the supervisor
+      // home pose does not encode a meaningful orientation so north is used
+      // as a stable default.
+      publishPositionTargetWithYaw(
+        return_home_target_.position.x,
+        return_home_target_.position.y,
+        return_home_target_.position.z,
+        0.0);
+      RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+        "🏠 [RETURN_HOME] Navegando para origem "
+        "(x=%.2f, y=%.2f, z=%.2f) — aguardando waypoints de pouso...",
+        return_home_target_.position.x,
+        return_home_target_.position.y,
+        return_home_target_.position.z);
+      return;
+    }
     int hold_idx = current_waypoint_idx_ - 1;
     if (hold_idx >= 0 && static_cast<size_t>(hold_idx) < trajectory_waypoints_.size()) {
       publish_trajectory_waypoint_setpoint(hold_idx);
@@ -2044,11 +2103,12 @@ void DroneControllerCompleto::handle_state3_trajectory()
   if (!initialize_trajectory()) { return; }
 
   // Mission interrupt: follow mission_waypoints instead of main trajectory.
-  // Only handle the landing phases (WAIT_LAND_WP / FOLLOW_LAND) here.
-  // The WAIT_TAKEOFF_WP and FOLLOW_TAKEOFF phases are handled by state 0 and
-  // handle_state2_hover() respectively, after the drone is on the ground.
+  // WAIT_LAND_WP / FOLLOW_LAND: per-waypoint landing cycle.
+  // RETURN_HOME: post-trajectory navigation to the home position; accepted
+  //   multi-pose landing waypoints are followed in FOLLOW_LAND from here.
   if (mission_cycle_phase_ == MissionCyclePhase::WAIT_LAND_WP ||
-      mission_cycle_phase_ == MissionCyclePhase::FOLLOW_LAND)
+      mission_cycle_phase_ == MissionCyclePhase::FOLLOW_LAND   ||
+      mission_cycle_phase_ == MissionCyclePhase::RETURN_HOME)
   {
     handle_mission_interrupt_in_state3();
     return;

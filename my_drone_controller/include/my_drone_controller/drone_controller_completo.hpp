@@ -36,6 +36,7 @@ enum class MissionCyclePhase {
   FOLLOW_LAND,     ///< Landing waypoints received; drone is descending toward ground.
   WAIT_TAKEOFF_WP, ///< Landing + DISARM complete; waiting for takeoff waypoint on /mission_waypoints.
   FOLLOW_TAKEOFF,  ///< Takeoff waypoint received; drone ascending; trajectory resumes at z >= 1.5 m.
+  RETURN_HOME,     ///< Trajectory complete; single-pose home waypoint received; drone navigating to origin.
 };
 
 /**
@@ -351,6 +352,9 @@ private:
   /// Waypoints for the current mission cycle (landing or takeoff), received
   /// on /mission_waypoints.  Cleared at the start of each interrupt cycle.
   std::vector<geometry_msgs::msg::Pose> mission_waypoints_;
+  /// Target pose for the RETURN_HOME phase (single pose published by the
+  /// supervisor after all mission cycles are complete).
+  geometry_msgs::msg::Pose return_home_target_{};
 
   // ── Odometry (NED) ───────────────────────────────────────────────────────
   double current_z_real_;
