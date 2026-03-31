@@ -170,6 +170,13 @@ private:
   void log_trajectory_waypoints_3d(const std::vector<geometry_msgs::msg::Pose> & poses);
   void activate_trajectory_in_hover(size_t waypoint_count);
 
+  // ── Takeoff XY sanitization ───────────────────────────────────────────────
+  /// Returns a copy of @p pose with XY overridden by the last latch pose when
+  /// the requested XY is suspiciously close to the origin (within
+  /// takeoff_xy_origin_threshold_m) and a fresh latch pose is available
+  /// (received within latch_pose_max_age_s).  Logs which XY source is used.
+  geometry_msgs::msg::Pose sanitize_takeoff_xy(const geometry_msgs::msg::Pose & pose);
+
   // ── Waypoint callbacks ───────────────────────────────────────────────────
   void waypoints_callback(const geometry_msgs::msg::PoseArray::SharedPtr msg);
   void mission_waypoints_callback(const geometry_msgs::msg::PoseArray::SharedPtr msg);
@@ -423,6 +430,15 @@ private:
   std::optional<uint64_t> hover_cmd_id_;
   std::optional<uint64_t> trajectory_cmd_id_;
   std::optional<uint64_t> land_cmd_id_;
+
+  // ── Latch pose cache (local copy of last published /mission_latch_pose) ──
+  /// True once at least one latch pose has been stored locally.
+  bool has_latch_pose_{false};
+  /// Position of the last reached trajectory waypoint, mirrored from the
+  /// most recent mission_latch_pose_pub_->publish() call.
+  geometry_msgs::msg::Pose last_latch_pose_;
+  /// Timestamp of the last stored latch pose (used for staleness check).
+  rclcpp::Time last_latch_pose_time_;
 };
 
 }  // namespace drone_control

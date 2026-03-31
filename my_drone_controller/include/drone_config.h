@@ -44,6 +44,16 @@ struct DroneConfig {
   /// The effective target is: max(hover_altitude, current_z_real + takeoff_z_boost).
   double takeoff_z_boost{0.7};
 
+  // ── Takeoff XY sanitization ───────────────────────────────────────────
+  /// If the requested takeoff XY is within this radius of the origin [m],
+  /// AND a recent latch pose exists, the takeoff XY is overridden with the
+  /// latch pose XY to prevent returning to origin after a landing cycle.
+  double takeoff_xy_origin_threshold_m{0.2};
+
+  /// Maximum age of a stored latch pose before it is considered stale and
+  /// no longer used to override a near-origin takeoff XY [s].
+  double latch_pose_max_age_s{10.0};
+
   // ── Timeouts ──────────────────────────────────────────────────────────
   /// Timeout waiting for OFFBOARD + ARM confirmation from FCU [s]
   double activation_timeout{5.0};
