@@ -41,7 +41,24 @@ windows:
   - px4_api:
       layout: tiled
       panes:
+<<<<<<< HEAD
         - ros2 launch mrs_uav_px4_api api.launch.py
+=======
+        - |
+          pkill -f "/opt/ros/jazzy/lib/px4/px4" || true
+          rm -rf /tmp/sitl_uav_1
+
+          export PX4_SIM_MODEL=f450
+          export PX4_SIMULATOR=gz
+          export PX4_GZ_MODEL_NAME=uav1
+          export PX4_GZ_WORLD=default
+          export CONNECT_TO_QGC=1
+
+          /opt/ros/jazzy/lib/px4/px4 \
+          ~/ros2_ws/install/mrs_uav_gazebo_simulator/share/mrs_uav_gazebo_simulator/ROMFS/px4fmu_common \
+          -s etc/init.d-posix/rcS -i 1 -w /tmp/sitl_uav_1
+
+>>>>>>> f0a4bdc (Initial commit)
         
        
   # ── 4. Status monitor (professional) ───────────────────────────────────────
