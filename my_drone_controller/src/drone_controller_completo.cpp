@@ -79,6 +79,18 @@ void DroneControllerCompleto::load_parameters()
   override_active_ = this->get_parameter("override_active").as_bool();
   RCLCPP_INFO(this->get_logger(), "⚙️  override_active=%s", override_active_ ? "true" : "false");
 
+  this->declare_parameter<double>("monitor_waypoint_goal_rate_hz", 5.0);
+  this->declare_parameter<double>("monitor_waypoints_rate_hz",     1.0);
+  this->declare_parameter<bool>  ("monitor_publish_only_when_active", true);
+  monitor_waypoint_goal_rate_hz_    = this->get_parameter("monitor_waypoint_goal_rate_hz").as_double();
+  monitor_waypoints_rate_hz_        = this->get_parameter("monitor_waypoints_rate_hz").as_double();
+  monitor_publish_only_when_active_ = this->get_parameter("monitor_publish_only_when_active").as_bool();
+  RCLCPP_INFO(this->get_logger(),
+    "⚙️  monitor_waypoint_goal_rate_hz=%.1f  monitor_waypoints_rate_hz=%.1f"
+    "  monitor_publish_only_when_active=%s",
+    monitor_waypoint_goal_rate_hz_, monitor_waypoints_rate_hz_,
+    monitor_publish_only_when_active_ ? "true" : "false");
+
   param_cb_handle_ = this->add_on_set_parameters_callback(
     std::bind(&DroneControllerCompleto::onSetParameters, this, std::placeholders::_1));
 
@@ -181,6 +193,26 @@ void DroneControllerCompleto::setup_services()
     std::chrono::milliseconds(10),
     std::bind(&DroneControllerCompleto::control_loop, this));
   RCLCPP_INFO(this->get_logger(), "✓ Timer criado: 100 Hz (10ms)");
+
+  // ── Monitoring heartbeat timers ─────────────────────────────────────────
+  if (monitor_waypoint_goal_rate_hz_ > 0.0) {
+    auto period_ms = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::duration<double, std::milli>(1000.0 / monitor_waypoint_goal_rate_hz_));
+    monitor_waypoint_goal_timer_ = this->create_wall_timer(
+      period_ms,
+      std::bind(&DroneControllerCompleto::monitor_waypoint_goal_heartbeat, this));
+    RCLCPP_INFO(this->get_logger(),
+      "✓ Heartbeat /waypoint_goal: %.1f Hz", monitor_waypoint_goal_rate_hz_);
+  }
+  if (monitor_waypoints_rate_hz_ > 0.0) {
+    auto period_ms = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::duration<double, std::milli>(1000.0 / monitor_waypoints_rate_hz_));
+    monitor_waypoints_timer_ = this->create_wall_timer(
+      period_ms,
+      std::bind(&DroneControllerCompleto::monitor_waypoints_heartbeat, this));
+    RCLCPP_INFO(this->get_logger(),
+      "✓ Heartbeat /waypoints: %.1f Hz", monitor_waypoints_rate_hz_);
+  }
 }
 
 void DroneControllerCompleto::init_variables()
@@ -1196,6 +1228,71 @@ void DroneControllerCompleto::publish_waypoints_status()
   RCLCPP_INFO(this->get_logger(),
     "📢 [/waypoints] Publicando %zu waypoints de trajetória",
     trajectory_waypoints_.size());
+}
+
+void DroneControllerCompleto::monitor_waypoint_goal_heartbeat()
+{
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  // If configured to publish only when active, suppress when there is no active goal/flight.
+  if (monitor_publish_only_when_active_ && !waypoint_goal_received_) { return; }
+
+  double x = 0.0, y = 0.0, z = 0.0;
+
+  // Source priority:
+  // 1) FOLLOW_LAND phase with mission waypoints → current mission landing waypoint
+  if (mission_cycle_phase_ == MissionCyclePhase::FOLLOW_LAND && !mission_waypoints_.empty()) {
+    int idx = mission_wp_follow_idx_;
+    if (idx < 0) { idx = 0; }
+    if (static_cast<size_t>(idx) >= mission_waypoints_.size()) {
+      idx = static_cast<int>(mission_waypoints_.size()) - 1;
+    }
+    const auto & p = mission_waypoints_[idx].position;
+    x = p.x; y = p.y; z = p.z;
+  }
+  // 2) Trajectory active with waypoints → current trajectory waypoint (clamped)
+  else if (state_voo_ == 3 && !trajectory_waypoints_.empty()) {
+    int idx = current_waypoint_idx_;
+    if (idx < 0) { idx = 0; }
+    if (static_cast<size_t>(idx) >= trajectory_waypoints_.size()) {
+      idx = static_cast<int>(trajectory_waypoints_.size()) - 1;
+    }
+    const auto & p = trajectory_waypoints_[idx].position;
+    x = p.x; y = p.y; z = p.z;
+  }
+  // 3) Fall back to the last received waypoint goal
+  else {
+    const auto & p = last_waypoint_goal_.pose.position;
+    x = p.x; y = p.y; z = p.z;
+  }
+
+  geometry_msgs::msg::PoseStamped msg;
+  msg.header.stamp = this->now();
+  msg.header.frame_id = "map";
+  msg.pose.position.x = x;
+  msg.pose.position.y = y;
+  msg.pose.position.z = z;
+  skip_self_waypoint_goal_count_++;
+  waypoint_goal_pub_->publish(msg);
+  RCLCPP_DEBUG(this->get_logger(),
+    "[heartbeat /waypoint_goal] X=%.2f Y=%.2f Z=%.2f", x, y, z);
+}
+
+void DroneControllerCompleto::monitor_waypoints_heartbeat()
+{
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  if (trajectory_waypoints_.empty()) { return; }
+  if (monitor_publish_only_when_active_ && !is_in_flight()) { return; }
+
+  geometry_msgs::msg::PoseArray msg;
+  msg.header.stamp = this->now();
+  msg.header.frame_id = "map";
+  msg.poses = trajectory_waypoints_;
+  skip_self_waypoints_count_++;
+  waypoints_pub_->publish(msg);
+  RCLCPP_DEBUG(this->get_logger(),
+    "[heartbeat /waypoints] %zu waypoints", trajectory_waypoints_.size());
 }
 
 // ============================================================
