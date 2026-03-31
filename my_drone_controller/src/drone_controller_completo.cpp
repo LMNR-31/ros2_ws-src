@@ -54,6 +54,8 @@ void DroneControllerCompleto::load_parameters()
   this->declare_parameter("takeoff_z_boost",         config_.takeoff_z_boost);
   this->declare_parameter("takeoff_xy_origin_threshold_m", config_.takeoff_xy_origin_threshold_m);
   this->declare_parameter("latch_pose_max_age_s",         config_.latch_pose_max_age_s);
+  this->declare_parameter("disarm_retry_interval_s",      config_.disarm_retry_interval_s);
+  this->declare_parameter("disarm_timeout_s",             config_.disarm_timeout_s);
 
   config_.hover_altitude          = this->get_parameter("hover_altitude").as_double();
   config_.hover_altitude_margin   = this->get_parameter("hover_altitude_margin").as_double();
@@ -70,6 +72,8 @@ void DroneControllerCompleto::load_parameters()
   config_.takeoff_xy_origin_threshold_m =
     this->get_parameter("takeoff_xy_origin_threshold_m").as_double();
   config_.latch_pose_max_age_s    = this->get_parameter("latch_pose_max_age_s").as_double();
+  config_.disarm_retry_interval_s = this->get_parameter("disarm_retry_interval_s").as_double();
+  config_.disarm_timeout_s        = this->get_parameter("disarm_timeout_s").as_double();
 
   this->declare_parameter<bool>("enabled", true);
   enabled_ = this->get_parameter("enabled").as_bool();
@@ -232,6 +236,9 @@ void DroneControllerCompleto::init_variables()
   pouso_start_time_set_ = false;
   pouso_start_time_ = this->now();
   disarm_requested_ = false;
+  // Initialized to epoch; overwritten by complete_landing() before any read.
+  disarm_last_attempt_time_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
+  disarm_request_start_time_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
   last_waypoint_goal_.pose.position.x = 0.0;
   last_waypoint_goal_.pose.position.y = 0.0;
   last_waypoint_goal_.pose.position.z = config_.hover_altitude;
@@ -2284,6 +2291,14 @@ void DroneControllerCompleto::complete_landing()
   // Mark that we are waiting for DISARM confirmation before transitioning state.
   // The state transition to 0 happens only after current_state_.armed becomes false.
   disarm_requested_ = true;
+  disarm_request_start_time_ = this->now();
+  disarm_last_attempt_time_ = this->now();  // will throttle retries from this point
+
+  // Actively send the DISARM command to the FCU via MAVROS.
+  // handle_state4_landing() will retry this at disarm_retry_interval_s cadence
+  // until the FCU confirms armed=false.
+  request_disarm();
+
   // Clear these early so handle_state4_landing() does NOT re-enter the
   // landing-timeout block and re-call complete_landing() while we are still
   // waiting for the FCU to confirm DISARM.
@@ -2320,8 +2335,37 @@ void DroneControllerCompleto::handle_state4_landing()
         "(fase: %s)",
         mission_cycle_phase_name(mission_cycle_phase_));
     } else {
-      RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 3000,
-        "⏳ [DISARM] Aguardando confirmação de DISARM pelo FCU...");
+      const auto now = this->get_clock()->now();
+      // Both timestamps are always set by complete_landing() before this code
+      // is reached (disarm_requested_ is only true after complete_landing()).
+      const double elapsed_since_start = (now - disarm_request_start_time_).seconds();
+      const double elapsed_since_last  = (now - disarm_last_attempt_time_).seconds();
+
+      // Retry the DISARM service call at disarm_retry_interval_s cadence.
+      if (elapsed_since_last >= config_.disarm_retry_interval_s) {
+        disarm_last_attempt_time_ = now;
+        if (arm_client_->service_is_ready()) {
+          RCLCPP_INFO(this->get_logger(),
+            "🔄 [DISARM] Re-tentando DISARM (%.0f s aguardando FCU)...",
+            elapsed_since_start);
+          request_disarm();
+        } else {
+          RCLCPP_WARN(this->get_logger(),
+            "⚠️ [DISARM] Serviço MAVROS arming não disponível — aguardando...");
+        }
+      }
+
+      // Fallback: log a prominent warning if DISARM is taking too long.
+      if (elapsed_since_start >= config_.disarm_timeout_s) {
+        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 10000,
+          "⚠️ [DISARM] FCU não confirmou DISARM após %.0f s — continuando retentativas. "
+          "Verifique o estado do FCU.",
+          elapsed_since_start);
+      } else {
+        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 3000,
+          "⏳ [DISARM] Aguardando confirmação de DISARM pelo FCU (%.0f s)...",
+          elapsed_since_start);
+      }
     }
     return;
   }
