@@ -132,7 +132,7 @@ install(PROGRAMS
 )
 
 add_executable(supervisor src/supervisor.cpp)
-ament_target_dependencies(supervisor rclcpp std_msgs)
+ament_target_dependencies(supervisor rclcpp std_msgs geometry_msgs nav_msgs)
 install(TARGETS supervisor DESTINATION lib/${PROJECT_NAME})
 
 add_executable(takeoff_waypoint_publisher_8s src/takeoff_waypoint_publisher_8s.cpp)

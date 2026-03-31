@@ -2,11 +2,14 @@
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/float32.hpp>
 #include <std_msgs/msg/int32.hpp>
+#include <geometry_msgs/msg/pose_array.hpp>
+#include <nav_msgs/msg/odometry.hpp>
 
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <cmath>
 #include <memory>
 #include <queue>
 
@@ -16,10 +19,28 @@ public:
     : Node("supervisor"),
       last_launched_waypoint_idx_(-1),
       mission_manager_pid_(-1),
-      trajectory_done_queued_(false)
+      trajectory_done_queued_(false),
+      return_home_active_(false),
+      landing_launched_(false),
+      landing_pid_(-1),
+      odom_received_(false),
+      current_x_(0.0),
+      current_y_(0.0),
+      current_z_(0.0)
     {
         this->declare_parameter<int>("min_waypoint_idx_to_trigger", 0);
         min_waypoint_idx_to_trigger_ = this->get_parameter("min_waypoint_idx_to_trigger").as_int();
+
+        this->declare_parameter<double>("home_x", 0.0);
+        this->declare_parameter<double>("home_y", 0.0);
+        this->declare_parameter<double>("home_z", 1.5);
+        this->declare_parameter<double>("xy_tolerance", 0.25);
+        this->declare_parameter<double>("z_tolerance", 0.20);
+        home_x_ = this->get_parameter("home_x").as_double();
+        home_y_ = this->get_parameter("home_y").as_double();
+        home_z_ = this->get_parameter("home_z").as_double();
+        xy_tolerance_ = this->get_parameter("xy_tolerance").as_double();
+        z_tolerance_ = this->get_parameter("z_tolerance").as_double();
 
         progress_sub_ = this->create_subscription<std_msgs::msg::Float32>(
             "/trajectory_progress", 10,
@@ -30,6 +51,12 @@ public:
         waypoint_reached_sub_ = this->create_subscription<std_msgs::msg::Int32>(
             "/waypoint_reached", 10,
             std::bind(&SupervisorNode::waypoint_reached_callback, this, std::placeholders::_1));
+        odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
+            "/uav1/mavros/local_position/odom", 10,
+            std::bind(&SupervisorNode::odom_callback, this, std::placeholders::_1));
+
+        waypoints_pub_ = this->create_publisher<geometry_msgs::msg::PoseArray>(
+            "/mission_waypoints", 10);
 
         // Periodic timer to drain the queue and reap finished mission_manager processes.
         queue_timer_ = this->create_wall_timer(
@@ -85,8 +112,60 @@ private:
         }
     }
 
+    // ── Called on each odometry message from MAVROS ───────────────────────
+    void odom_callback(const nav_msgs::msg::Odometry::SharedPtr msg) {
+        current_x_ = msg->pose.pose.position.x;
+        current_y_ = msg->pose.pose.position.y;
+        current_z_ = msg->pose.pose.position.z;
+        odom_received_ = true;
+    }
+
     // ── Periodic: reap finished process, launch next from queue ───────────
     void process_queue() {
+        // Reap landing publisher process if it has finished.
+        if (landing_pid_ > 0) {
+            int status = 0;
+            pid_t result = waitpid(landing_pid_, &status, WNOHANG);
+            if (result == landing_pid_ || result < 0) {
+                landing_pid_ = -1;
+            }
+        }
+
+        // If return-home mode is active, check if we've arrived at the origin.
+        if (return_home_active_) {
+            if (odom_received_) {
+                double dx = current_x_ - home_x_;
+                double dy = current_y_ - home_y_;
+                double dxy = std::sqrt(dx * dx + dy * dy);
+                double dz = std::abs(current_z_ - home_z_);
+                if (dxy <= xy_tolerance_ && dz <= z_tolerance_) {
+                    RCLCPP_INFO(this->get_logger(),
+                        "Chegou à origem (dxy=%.3f m, dz=%.3f m). Iniciando landing publisher...",
+                        dxy, dz);
+                    if (!landing_launched_) {
+                        pid_t pid = fork();
+                        if (pid == 0) {
+                            execlp("ros2", "ros2", "run", "drone_control",
+                                   "drone_publish_landing_waypoints",
+                                   (char *)nullptr);
+                            _exit(1);
+                        } else if (pid > 0) {
+                            landing_launched_ = true;
+                            landing_pid_ = pid;
+                            RCLCPP_INFO(this->get_logger(),
+                                "drone_publish_landing_waypoints iniciado (PID %d).", pid);
+                        } else {
+                            RCLCPP_ERROR(this->get_logger(),
+                                "fork() falhou ao iniciar drone_publish_landing_waypoints!");
+                        }
+                    }
+                    return_home_active_ = false;
+                }
+            }
+            // Do not process further queue items while returning home.
+            return;
+        }
+
         // Reap the previous mission_manager if it has finished.
         if (mission_manager_pid_ > 0) {
             int status = 0;
@@ -111,6 +190,26 @@ private:
 
         int wp = pending_queue_.front();
         pending_queue_.pop();
+
+        if (wp == -1) {
+            // End-of-trajectory sentinel: publish return-to-origin waypoint.
+            auto msg = geometry_msgs::msg::PoseArray();
+            msg.header.frame_id = "map";
+            msg.header.stamp = this->now();
+            geometry_msgs::msg::Pose pose;
+            pose.position.x = home_x_;
+            pose.position.y = home_y_;
+            pose.position.z = home_z_;
+            pose.orientation.w = 1.0;
+            msg.poses.push_back(pose);
+            waypoints_pub_->publish(msg);
+            return_home_active_ = true;
+            RCLCPP_INFO(this->get_logger(),
+                "Trajetória concluída. Waypoint de retorno à origem publicado "
+                "(x=%.2f, y=%.2f, z=%.2f).",
+                home_x_, home_y_, home_z_);
+            return;
+        }
 
         RCLCPP_INFO(this->get_logger(),
             "Iniciando mission_manager para waypoint %d...", wp);
@@ -141,6 +240,8 @@ private:
     rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr progress_sub_;
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr finished_sub_;
     rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr waypoint_reached_sub_;
+    rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
+    rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr waypoints_pub_;
     rclcpp::TimerBase::SharedPtr queue_timer_;
 
     int last_launched_waypoint_idx_;
@@ -148,6 +249,22 @@ private:
     pid_t mission_manager_pid_;
     bool trajectory_done_queued_;
     std::queue<int> pending_queue_;
+
+    // ── Return-to-origin state ─────────────────────────────────────────────
+    bool return_home_active_;
+    bool landing_launched_;
+    pid_t landing_pid_;
+    double home_x_;
+    double home_y_;
+    double home_z_;
+    double xy_tolerance_;
+    double z_tolerance_;
+
+    // ── Current odometry ──────────────────────────────────────────────────
+    bool odom_received_;
+    double current_x_;
+    double current_y_;
+    double current_z_;
 };
 
 int main(int argc, char **argv) {
