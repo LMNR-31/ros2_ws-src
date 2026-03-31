@@ -161,8 +161,13 @@ private:
                     if (!landing_launched_) {
                         pid_t pid = fork();
                         if (pid == 0) {
+                            // Pass output_topic:=/waypoints so the final landing
+                            // is published as a normal trajectory (not
+                            // /mission_waypoints) and is accepted regardless of
+                            // the controller's mission-cycle phase.
                             execlp("ros2", "ros2", "run", "drone_control",
                                    "drone_publish_landing_waypoints",
+                                   "--ros-args", "-p", "output_topic:=/waypoints",
                                    (char *)nullptr);
                             _exit(1);
                         } else if (pid > 0) {
