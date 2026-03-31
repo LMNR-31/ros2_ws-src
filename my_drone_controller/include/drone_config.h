@@ -65,6 +65,12 @@ struct DroneConfig {
   /// ARM is only sent once the FCU reports mode == "OFFBOARD"; this parameter
   /// controls how long we wait for that confirmation before retrying OFFBOARD.
   double offboard_confirm_timeout{5.0};
+  /// Interval between retries of the DISARM service call while waiting for
+  /// FCU confirmation (armed→false) after landing [s].
+  double disarm_retry_interval_s{3.0};
+  /// Timeout after which a WARN is logged if the FCU has not confirmed DISARM.
+  /// The retry loop continues beyond this point; this is only a log threshold [s].
+  double disarm_timeout_s{30.0};
 };
 
 }  // namespace drone_control

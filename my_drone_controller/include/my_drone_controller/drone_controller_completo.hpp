@@ -322,6 +322,10 @@ private:
   bool pouso_start_time_set_;
   /// true when DISARM has been requested but FCU confirmation is still pending
   bool disarm_requested_;
+  /// Timestamp of the most recent DISARM service call (used for retry throttling)
+  rclcpp::Time disarm_last_attempt_time_;
+  /// Timestamp when complete_landing() first requested DISARM (for timeout tracking)
+  rclcpp::Time disarm_request_start_time_;
 
   // ── Waypoint tracking ────────────────────────────────────────────────────
   geometry_msgs::msg::PoseStamped last_waypoint_goal_;
