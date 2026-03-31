@@ -35,15 +35,12 @@ windows:
         - ros2 launch mrs_uav_gazebo_simulator simulation.launch.py  gz_headless:=false gz_verbose:=true
         - |
           waitForGazebo; sleep 5
-          ros2 service call /mrs_drone_spawner/spawn mrs_msgs/srv/String "{value: '1 --$UAV_TYPE --enable-rangefinder  --pos -0.85 0.70 1 1.57'}"
+          ros2 service call /mrs_drone_spawner/spawn mrs_msgs/srv/String "{value: '1 --$UAV_TYPE --enable-realsense-down --enable-realsense-front --enable-rangefinder  --pos -0.85 0.70 1 1.57'}"
 
   # ── 3. PX4 API ─────────────────────────────────────────────────────────────
   - px4_api:
       layout: tiled
       panes:
-<<<<<<< HEAD
-        - ros2 launch mrs_uav_px4_api api.launch.py
-=======
         - |
           pkill -f "/opt/ros/jazzy/lib/px4/px4" || true
           rm -rf /tmp/sitl_uav_1
@@ -58,7 +55,6 @@ windows:
           ~/ros2_ws/install/mrs_uav_gazebo_simulator/share/mrs_uav_gazebo_simulator/ROMFS/px4fmu_common \
           -s etc/init.d-posix/rcS -i 1 -w /tmp/sitl_uav_1
 
->>>>>>> f0a4bdc (Initial commit)
         
        
   # ── 4. Status monitor (professional) ───────────────────────────────────────

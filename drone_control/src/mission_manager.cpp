@@ -92,8 +92,8 @@ private:
     }
 
     RCLCPP_INFO(this->get_logger(),
-      "😴 [MISSION WP%d] FASE 3: REPOUSO 5 SEGUNDOS", waypoint_idx_);
-    for (int i = 5; i > 0; i--) {
+      "😴 [MISSION WP%d] FASE 3: REPOUSO 2 SEGUNDOS", waypoint_idx_);
+    for (int i = 2; i > 0; i--) {
       if (stop_requested_.load()) { return; }
       RCLCPP_INFO(this->get_logger(),
         "  ⏱️ [MISSION WP%d] %d segundo(s) restante(s)...", waypoint_idx_, i);

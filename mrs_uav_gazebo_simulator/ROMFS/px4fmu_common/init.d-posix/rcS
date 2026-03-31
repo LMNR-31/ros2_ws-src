@@ -158,6 +158,23 @@ then
 
 	param set SENS_BOARD_X_OFF 0.000001
 	param set SENS_DPRES_OFF 0.001
+	param set NAV_DLL_ACT 0
+	param set COM_DLL_EXCEPT 2
+	param set COM_RCL_EXCEPT 2
+
+	# Headless: avoid battery-action RTL (your ROMFS sets COM_LOW_BAT_ACT=3 by default)
+	param set COM_LOW_BAT_ACT 0
+
+	# Optional: remove geofence actions in sim/headless
+	param set GF_ACTION 0
+	param set-default NAV_RCL_ACT 3
+	param set NAV_RCL_ACT 3
+
+	param set-default COM_LOW_BAT_ACT 0
+	param set COM_LOW_BAT_ACT 0
+
+	param set-default NAV_DLL_ACT 0
+	param set NAV_DLL_ACT 0
 fi
 
 param set-default BAT1_N_CELLS 4
