@@ -41,6 +41,18 @@ drone_controller_completo:
     # Recommended: 0.7 m (at least 0.5 m above ground to trigger PX4 movement detection).
     takeoff_z_boost: 0.7
 
+    # ── Takeoff XY sanitization ──────────────────────────────────────────
+    # If the requested takeoff XY is within this radius of the map origin (metres),
+    # AND a recent latch pose is available, the takeoff XY is overridden with the
+    # latch pose XY.  This prevents the drone from flying back to near (0,0) after
+    # a landing cycle when the mission takeoff publisher had not yet received the
+    # latch pose.
+    takeoff_xy_origin_threshold_m: 0.2
+
+    # Maximum age of a stored latch pose before it is considered stale (seconds).
+    # Latch poses older than this value are not used to override takeoff XY.
+    latch_pose_max_age_s: 10.0
+
     # ── Timeouts ─────────────────────────────────────────────────────────
     # Timeout waiting for OFFBOARD + ARM confirmation from FCU (seconds)
     activation_timeout: 3.0
