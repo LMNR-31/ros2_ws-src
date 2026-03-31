@@ -198,6 +198,10 @@ private:
   void publishPositionTargetWithYaw(double x, double y, double z, double yaw_rad);
   /// Publish a hold setpoint using hold_* if valid, otherwise current_*_ned_.
   void publish_hold_setpoint();
+  /// Publish x, y, z as the current active goal to /waypoint_goal (with self-echo guard).
+  void publish_waypoint_goal_status(double x, double y, double z);
+  /// Publish trajectory_waypoints_ to /waypoints (with self-echo guard).
+  void publish_waypoints_status();
 
   // ── Main control loop ────────────────────────────────────────────────────
   void control_loop();
@@ -252,6 +256,10 @@ private:
   /// so that drone_publish_landing_waypoints can use it as an accurate XY
   /// reference instead of relying on the live MAVROS pose.
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr mission_latch_pose_pub_;
+  /// Publishes the current active waypoint goal for external monitoring.
+  rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr waypoint_goal_pub_;
+  /// Publishes the currently stored trajectory waypoints for external monitoring.
+  rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr waypoints_pub_;
 
   // ── Subscribers ──────────────────────────────────────────────────────────
   rclcpp::Subscription<mavros_msgs::msg::State>::SharedPtr state_sub_;
@@ -314,6 +322,10 @@ private:
   /// -1 means no waypoint has been published yet for the current trajectory.
   int last_waypoint_reached_idx_;
 
+  /// Last mission waypoint index for which /waypoint_goal was published (debounce).
+  /// Reset to -1 when mission_waypoints_ is cleared.
+  int last_published_mission_wp_idx_{-1};
+
   // ── Mission interrupt state (per-waypoint land/disarm/rearm/takeoff cycle) ──
   /// Phase of the current per-waypoint mission cycle.  NONE means no cycle is
   /// active.  Using an explicit phase (rather than a single boolean) prevents
@@ -353,6 +365,10 @@ private:
   // ── Control flags ────────────────────────────────────────────────────────
   bool enabled_{true};
   bool override_active_{false};
+  /// Loop guard: skip the next /waypoint_goal message coming from our own publisher.
+  int skip_self_waypoint_goal_count_{0};
+  /// Loop guard: skip the next /waypoints message coming from our own publisher.
+  int skip_self_waypoints_count_{0};
 
   // ── Takeoff target altitude (latched) ────────────────────────────────────
   /// Fixed takeoff target altitude (metres) for the current climb.

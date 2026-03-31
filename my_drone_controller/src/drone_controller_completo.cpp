@@ -100,11 +100,16 @@ void DroneControllerCompleto::setup_publishers()
   waypoint_reached_pub_ = this->create_publisher<std_msgs::msg::Int32>("/waypoint_reached", 10);
   mission_latch_pose_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>(
     "/mission_latch_pose", 10);
+  waypoint_goal_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>(
+    "/waypoint_goal", 10);
+  waypoints_pub_ = this->create_publisher<geometry_msgs::msg::PoseArray>("/waypoints", 10);
   RCLCPP_INFO(this->get_logger(), "✓ Publisher criado: /uav1/mavros/setpoint_raw/local");
   RCLCPP_INFO(this->get_logger(), "✓ Publisher criado: /trajectory_finished");
   RCLCPP_INFO(this->get_logger(), "✓ Publisher criado: /trajectory_progress");
   RCLCPP_INFO(this->get_logger(), "✓ Publisher criado: /waypoint_reached");
   RCLCPP_INFO(this->get_logger(), "✓ Publisher criado: /mission_latch_pose");
+  RCLCPP_INFO(this->get_logger(), "✓ Publisher criado: /waypoint_goal");
+  RCLCPP_INFO(this->get_logger(), "✓ Publisher criado: /waypoints");
 }
 
 void DroneControllerCompleto::setup_subscribers()
@@ -203,6 +208,7 @@ void DroneControllerCompleto::init_variables()
   last_waypoint_reached_idx_ = -1;
   mission_cycle_phase_ = MissionCyclePhase::NONE;
   mission_wp_follow_idx_ = 0;
+  last_published_mission_wp_idx_ = -1;
   mission_waypoints_.clear();
   current_z_real_ = 0.0;
   current_x_ned_ = 0.0;
@@ -598,6 +604,9 @@ void DroneControllerCompleto::waypoints_callback(
 {
   std::lock_guard<std::mutex> lock(mutex_);
 
+  // Guard against receiving our own published monitoring echo.
+  if (skip_self_waypoints_count_ > 0) { skip_self_waypoints_count_--; return; }
+
   trajectory_4d_mode_ = false;
 
   if (msg->poses.size() < 1) {
@@ -665,8 +674,10 @@ void DroneControllerCompleto::waypoints_callback(
     mission_cycle_phase_ = MissionCyclePhase::NONE;
     mission_waypoints_.clear();
     mission_wp_follow_idx_ = 0;
+    last_published_mission_wp_idx_ = -1;
 
     log_trajectory_waypoints_3d(trajectory_waypoints_);
+    publish_waypoints_status();
 
     if (state_voo_ != 2) {
       RCLCPP_INFO(this->get_logger(),
@@ -851,6 +862,9 @@ void DroneControllerCompleto::waypoint_goal_callback(
 {
   std::lock_guard<std::mutex> lock(mutex_);
 
+  // Guard against receiving our own published monitoring echo.
+  if (skip_self_waypoint_goal_count_ > 0) { skip_self_waypoint_goal_count_--; return; }
+
   using_4d_goal_ = false;
 
   if (!validate_waypoint(*msg, config_)) {
@@ -873,6 +887,7 @@ void DroneControllerCompleto::waypoint_goal_callback(
     trajectory_setpoint_[2] = z;
     controlador_ativo_ = true;
     pouso_em_andamento_ = false;
+    publish_waypoint_goal_status(x, y, z);
     return;
   }
 
@@ -882,6 +897,7 @@ void DroneControllerCompleto::waypoint_goal_callback(
   waypoint_goal_received_ = true;
   controlador_ativo_ = true;
   pouso_em_andamento_ = false;
+  publish_waypoint_goal_status(x, y, z);
 }
 
 void DroneControllerCompleto::waypoint_goal_4d_callback(
@@ -931,6 +947,7 @@ void DroneControllerCompleto::waypoint_goal_4d_callback(
     trajectory_setpoint_[2] = z;
     controlador_ativo_ = true;
     pouso_em_andamento_ = false;
+    publish_waypoint_goal_status(x, y, z);
     return;
   }
 
@@ -942,6 +959,7 @@ void DroneControllerCompleto::waypoint_goal_4d_callback(
   waypoint_goal_received_ = true;
   controlador_ativo_ = true;
   pouso_em_andamento_ = false;
+  publish_waypoint_goal_status(x, y, z);
 }
 
 void DroneControllerCompleto::waypoints_4d_callback(
@@ -1077,6 +1095,8 @@ void DroneControllerCompleto::waypoints_4d_callback(
       i, poses[i].position.x, poses[i].position.y, poses[i].position.z, yaws[i]);
   }
 
+  publish_waypoints_status();
+
   if (state_voo_ != 2) {
     RCLCPP_INFO(this->get_logger(),
       "⏸️ Trajetória 4D armazenada - Será ativada quando drone chegar em HOVER (ESTADO 2)");
@@ -1086,6 +1106,38 @@ void DroneControllerCompleto::waypoints_4d_callback(
   }
 
   activate_trajectory_in_hover(msg->waypoints.size());
+}
+
+// ============================================================
+// MONITORING PUBLISHERS (/waypoint_goal, /waypoints)
+// ============================================================
+
+void DroneControllerCompleto::publish_waypoint_goal_status(double x, double y, double z)
+{
+  geometry_msgs::msg::PoseStamped msg;
+  msg.header.stamp = this->now();
+  msg.header.frame_id = "map";
+  msg.pose.position.x = x;
+  msg.pose.position.y = y;
+  msg.pose.position.z = z;
+  skip_self_waypoint_goal_count_++;
+  waypoint_goal_pub_->publish(msg);
+  RCLCPP_INFO(this->get_logger(),
+    "📢 [/waypoint_goal] Publicado: X=%.2f, Y=%.2f, Z=%.2f", x, y, z);
+}
+
+void DroneControllerCompleto::publish_waypoints_status()
+{
+  if (trajectory_waypoints_.empty()) { return; }
+  geometry_msgs::msg::PoseArray msg;
+  msg.header.stamp = this->now();
+  msg.header.frame_id = "map";
+  msg.poses = trajectory_waypoints_;
+  skip_self_waypoints_count_++;
+  waypoints_pub_->publish(msg);
+  RCLCPP_INFO(this->get_logger(),
+    "📢 [/waypoints] Publicando %zu waypoints de trajetória",
+    trajectory_waypoints_.size());
 }
 
 // ============================================================
@@ -1609,6 +1661,7 @@ void DroneControllerCompleto::handle_state2_hover()
     mission_cycle_phase_ = MissionCyclePhase::NONE;
     mission_waypoints_.clear();
     mission_wp_follow_idx_ = 0;
+    last_published_mission_wp_idx_ = -1;
     // Only resume trajectory if there are remaining waypoints.
     if (!trajectory_waypoints_.empty() &&
         current_waypoint_idx_ < static_cast<int>(trajectory_waypoints_.size()))
@@ -1679,6 +1732,11 @@ bool DroneControllerCompleto::initialize_trajectory()
   RCLCPP_INFO(this->get_logger(),
     "✈️ Trajetória iniciada! %zu waypoints | %.1f segundos cada",
     trajectory_waypoints_.size(), waypoint_duration_);
+
+  // Publish the first waypoint as the active goal for monitoring.
+  const auto & first_wp = trajectory_waypoints_[0];
+  publish_waypoint_goal_status(first_wp.position.x, first_wp.position.y, first_wp.position.z);
+
   return true;
 }
 
@@ -1781,6 +1839,12 @@ void DroneControllerCompleto::handle_mission_interrupt_in_state3()
 
   const auto & mwp = mission_waypoints_[mission_wp_follow_idx_];
   publishPositionTargetWithYaw(mwp.position.x, mwp.position.y, mwp.position.z, 0.0);
+
+  // Publish current mission waypoint to /waypoint_goal when the active index changes.
+  if (last_published_mission_wp_idx_ != mission_wp_follow_idx_) {
+    last_published_mission_wp_idx_ = mission_wp_follow_idx_;
+    publish_waypoint_goal_status(mwp.position.x, mwp.position.y, mwp.position.z);
+  }
 
   RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 3000,
     "🔄 [MISSION] Seguindo waypoint de missão [%d/%zu]: X=%.2f, Y=%.2f, Z=%.2f",
@@ -1886,6 +1950,13 @@ void DroneControllerCompleto::handle_state3_trajectory()
       // Advance to the next waypoint index.
       current_waypoint_idx_++;
 
+      // Publish the next active trajectory waypoint to /waypoint_goal for monitoring.
+      if (current_waypoint_idx_ < static_cast<int>(trajectory_waypoints_.size())) {
+        const auto & next_wp = trajectory_waypoints_[current_waypoint_idx_];
+        publish_waypoint_goal_status(
+          next_wp.position.x, next_wp.position.y, next_wp.position.z);
+      }
+
       // Check whether the trajectory is now complete.
       if (current_waypoint_idx_ >= static_cast<int>(trajectory_waypoints_.size())) {
         finalize_trajectory_complete();
@@ -1898,6 +1969,7 @@ void DroneControllerCompleto::handle_state3_trajectory()
         mission_cycle_phase_ = MissionCyclePhase::WAIT_LAND_WP;
         mission_waypoints_.clear();
         mission_wp_follow_idx_ = 0;
+        last_published_mission_wp_idx_ = -1;
         return;
       }
 
@@ -1910,6 +1982,7 @@ void DroneControllerCompleto::handle_state3_trajectory()
       mission_cycle_phase_ = MissionCyclePhase::WAIT_LAND_WP;
       mission_waypoints_.clear();
       mission_wp_follow_idx_ = 0;
+      last_published_mission_wp_idx_ = -1;
     }
   }
 }
@@ -1947,6 +2020,7 @@ void DroneControllerCompleto::mission_interrupt_done_callback(
   mission_cycle_phase_ = MissionCyclePhase::NONE;
   mission_waypoints_.clear();
   mission_wp_follow_idx_ = 0;
+  last_published_mission_wp_idx_ = -1;
 
   if (!trajectory_waypoints_.empty() &&
       current_waypoint_idx_ < static_cast<int>(trajectory_waypoints_.size()))
@@ -1955,6 +2029,8 @@ void DroneControllerCompleto::mission_interrupt_done_callback(
     RCLCPP_INFO(this->get_logger(),
       "▶️ [MISSION] controlador_ativo_=true — trajetória retomará em WP[%d] ao atingir HOVER.",
       current_waypoint_idx_);
+    // Republish the stored trajectory waypoints so observers can see the active set.
+    publish_waypoints_status();
   } else {
     RCLCPP_WARN(this->get_logger(),
       "⚠️ [MISSION] Nenhum waypoint restante em current_waypoint_idx_=%d (tamanho=%zu). "
