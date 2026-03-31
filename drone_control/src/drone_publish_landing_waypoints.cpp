@@ -14,7 +14,13 @@ class DronePublishLandingWaypoints : public rclcpp::Node
 public:
   DronePublishLandingWaypoints() : Node("drone_publish_landing_waypoints"), phase_(LandingPhase::WAIT_POSE)
   {
-    waypoints_pub_ = this->create_publisher<geometry_msgs::msg::PoseArray>("/mission_waypoints", 10);
+    // The output topic is configurable so that the supervisor can publish the
+    // final landing directly to /waypoints (normal trajectory) instead of the
+    // default /mission_waypoints (per-waypoint interrupt cycle).
+    this->declare_parameter<std::string>("output_topic", "/mission_waypoints");
+    std::string output_topic = this->get_parameter("output_topic").as_string();
+    waypoints_pub_ = this->create_publisher<geometry_msgs::msg::PoseArray>(output_topic, 10);
+    RCLCPP_INFO(this->get_logger(), "📡 Publicando waypoints de pouso em: %s", output_topic.c_str());
 
     // Primary XY reference: the waypoint position latched by the controller at
     // the moment of reach.  This is more accurate than the live MAVROS pose and
@@ -79,7 +85,7 @@ private:
           phase_ = LandingPhase::PUBLISH;
         } else if (wait_ticks_ >= kWaitPoseTimeoutTicks) {
           RCLCPP_ERROR(this->get_logger(),
-            "❌ Timeout aguardando pose: não é possível publicar /mission_waypoints sem posição válida (evitando XY=(0,0)).");
+            "❌ Timeout aguardando pose: não é possível publicar waypoints de pouso sem posição válida (evitando XY=(0,0)).");
           timer_->cancel();
           rclcpp::shutdown();
         }
